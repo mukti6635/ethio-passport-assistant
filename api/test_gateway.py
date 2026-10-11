@@ -96,6 +96,7 @@ def fake_browser_use(monkeypatch):
             "browser_use.llm",
             "browser_use.browser",
             "browser_use.browser.browser",
+            "langchain_openai",
         )
         if name in sys.modules
     }
@@ -121,6 +122,11 @@ def fake_browser_use(monkeypatch):
         async def close(self):
             self.closed = True
 
+    # gateway.py imports ChatOpenAI from langchain_openai (browser-use
+    # 0.1.48 has no browser_use.llm module); fake that too.
+    lc_mod = types.ModuleType("langchain_openai")
+    lc_mod.ChatOpenAI = FakeChatOpenAI
+
     llm_mod.ChatOpenAI = FakeChatOpenAI
     browser_mod.Browser = FakeBrowser
     browser_mod.BrowserConfig = FakeBrowserConfig
@@ -132,6 +138,7 @@ def fake_browser_use(monkeypatch):
     sys.modules["browser_use.llm"] = llm_mod
     sys.modules["browser_use.browser"] = browser_pkg
     sys.modules["browser_use.browser.browser"] = browser_mod
+    sys.modules["langchain_openai"] = lc_mod
 
     # The point: browser_use.Agent is monkeypatched, never the real thing.
     monkeypatch.setattr(mod, "Agent", FakeAgent, raising=False)
@@ -144,6 +151,7 @@ def fake_browser_use(monkeypatch):
         "browser_use.llm",
         "browser_use.browser",
         "browser_use.browser.browser",
+        "langchain_openai",
     ):
         sys.modules.pop(name, None)
     sys.modules.update(saved)

@@ -165,7 +165,9 @@ def _get_job(job_id: str, session_id: str) -> Job:
 
 def _build_llm() -> Any:
     """Chat model for the agent. Provider choice is env-only."""
-    from browser_use.llm import ChatOpenAI
+    # NOTE: browser-use 0.1.48 has no `browser_use.llm` module; the
+    # project's own WebUI uses langchain_openai.ChatOpenAI instead.
+    from langchain_openai import ChatOpenAI
 
     model = os.environ.get("ETHIO_LLM_MODEL", "gpt-4o")
     # OPENAI_API_KEY is read from the environment by the client itself.
