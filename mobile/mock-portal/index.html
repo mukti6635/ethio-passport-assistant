@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+  ============================================================================
+  ETHIO MOCK PORTAL — FOR AGENT TESTING ONLY
+  ============================================================================
+  This is a FAKE government-style portal. It is NOT a real government website,
+  is NOT affiliated with any government, collects NO real data, and submits
+  NOTHING anywhere. Every "server" interaction is simulated in this file with
+  a short delay. Use it to test the ETHIO browser agent safely.
+
+  AGENT HINTS (for automation):
+  - Steps are <section data-step="form|review|checkpoints|appointment|final|done">.
+  - document.title updates per step, e.g. "Mock Portal — Step 2 of 6: Review".
+  - Stable selectors: [data-testid="..."] on all key controls.
+  - Toggles: #toggle-labels (renames field labels), #toggle-netfail
+    (makes fake server calls fail), #btn-reset (full reset).
+  - Simulated states to exercise:
+      * missing info  -> submit with empty required fields
+      * conflict      -> National ID starting with "9"
+      * OTP           -> any 6 digits accepted; the code is shown on screen
+      * CAPTCHA       -> single checkbox
+      * payment       -> fake, no real charge
+      * appointment   -> radio slots generated for upcoming weekdays
+      * network fail  -> enable #toggle-netfail, then retry
+  ============================================================================
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mock Portal — Step 1 of 6: Application form</title>
+<style>
+  :root { --brand:#0b6e4f; --ink:#1c1c1c; --muted:#5f6368; --line:#dfe3e6;
+          --danger:#b3261e; --warn:#8a5a00; --bg:#f6f8f7; --card:#ffffff; }
+  * { box-sizing:border-box; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         margin:0; color:var(--ink); background:var(--bg); }
+  .mock-banner { background:#3d2b00; color:#ffe9a8; padding:10px 16px;
+                 font-size:14px; font-weight:600; text-align:center; }
+  header.top { background:var(--brand); color:#fff; padding:14px 20px; }
+  header.top h1 { margin:0; font-size:20px; }
+  header.top p { margin:4px 0 0; font-size:13px; opacity:.9; }
+  .toolbar { display:flex; gap:18px; flex-wrap:wrap; align-items:center;
+             background:#e9f2ed; border-bottom:1px solid var(--line);
+             padding:10px 20px; font-size:14px; }
+  .toolbar label { display:flex; gap:6px; align-items:center; cursor:pointer; }
+  .toolbar button { cursor:pointer; }
+  main { max-width:760px; margin:24px auto 64px; padding:0 16px; }
+  .stepper { display:flex; gap:4px; margin-bottom:20px; flex-wrap:wrap; }
+  .stepper span { flex:1 1 0; min-width:90px; text-align:center; font-size:12px;
+                  padding:8px 4px; border-radius:6px; background:#e3e8e6;
+                  color:var(--muted); }
+  .stepper span.active { background:var(--brand); color:#fff; font-weight:600; }
+  .stepper span.done { background:#cfe6d9; color:#14532d; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:20px; margin-bottom:16px; }
+  .card h2 { margin:0 0 4px; font-size:18px; }
+  .card p.sub { margin:0 0 16px; color:var(--muted); font-size:13px; }
+  .field { margin-bottom:14px; }
+  .field label { display:block; font-weight:600; font-size:14px; margin-bottom:4px; }
+  .field label .req { color:var(--danger); }
+  .field label .opt { color:var(--muted); font-weight:400; font-size:12px; }
+  .field input, .field select, .field textarea {
+    width:100%; padding:10px; font-size:15px; border:1px solid var(--line);
+    border-radius:6px; background:#fff; }
+  .field input[type=checkbox], .field input[type=radio] { width:auto; }
+  .field .err { color:var(--danger); font-size:13px; margin-top:4px; display:none; }
+  .field.invalid input, .field.invalid select, .field.invalid textarea {
+    border-color:var(--danger); }
+  .field.invalid .err { display:block; }
+  .row { display:flex; gap:12px; }
+  .row .field { flex:1; }
+  .btn { background:var(--brand); color:#fff; border:0; border-radius:8px;
+         padding:12px 20px; font-size:15px; font-weight:600; cursor:pointer; }
+  .btn[disabled] { opacity:.55; cursor:wait; }
+  .btn.secondary { background:#e3e8e6; color:var(--ink); }
+  .btnrow { display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; }
+  .alert { border-radius:8px; padding:12px 14px; margin-bottom:16px; font-size:14px; }
+  .alert.error { background:#fdecea; border:1px solid #f5c6c2; color:#7a1f1a; }
+  .alert.warn  { background:#fff7e0; border:1px solid #f0d48a; color:#6b4a00; }
+  .alert.ok    { background:#e7f4ec; border:1px solid #bfe3cd; color:#14532d; }
+  .alert.info  { background:#e8f0fe; border:1px solid #c2d7f8; color:#1a3d7c; }
+  table.review { width:100%; border-collapse:collapse; font-size:14px; }
+  table.review th, table.review td { text-align:left; padding:8px;
+    border-bottom:1px solid var(--line); vertical-align:top; }
+  table.review th { color:var(--muted); font-weight:600; width:40%; }
+  .slots label { display:flex; gap:10px; align-items:center; padding:10px;
+    border:1px solid var(--line); border-radius:8px; margin-bottom:8px;
+    cursor:pointer; font-size:15px; }
+  .slots label:hover { background:#f0f6f2; }
+  .otp-box { font-size:26px; letter-spacing:8px; font-weight:700;
+             background:#f1f3f4; border:1px dashed var(--muted);
+             border-radius:8px; padding:10px; text-align:center; margin:8px 0; }
+  .filechip { display:inline-flex; gap:8px; align-items:center; background:#eef4f1;
+    border:1px solid var(--line); border-radius:20px; padding:6px 12px;
+    font-size:13px; margin-top:6px; }
+  .filechip button { border:0; background:none; cursor:pointer; color:var(--danger); }
+  .ref { font-size:24px; font-weight:800; letter-spacing:2px; color:var(--brand);
+         background:#eef4f1; border-radius:8px; padding:12px; text-align:center; }
+  #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+           background:#202124; color:#fff; padding:12px 20px; border-radius:8px;
+           font-size:14px; display:none; max-width:90vw; z-index:50; }
+  .spinner { display:inline-block; width:16px; height:16px; border:2px solid #fff;
+             border-top-color:transparent; border-radius:50%;
+             animation:spin .7s linear infinite; vertical-align:-3px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  footer { text-align:center; color:var(--muted); font-size:12px; padding:24px; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+
+<div class="mock-banner">⚠️ MOCK PORTAL — FOR ETHIO AGENT TESTING ONLY. Not a government website. No real data is collected, sent, or stored.</div>
+
+<header class="top">
+  <h1 data-testid="portal-title">Mock Service Portal <span style="font-weight:400;font-size:14px;">(SIMULATED)</span></h1>
+  <p>Practice target for the ETHIO browser agent. Every step below is fake.</p>
+</header>
+
+<div class="toolbar" role="group" aria-label="Test controls">
+  <strong>Test controls:</strong>
+  <label><input type="checkbox" id="toggle-labels" data-testid="toggle-labels"> Rename field labels</label>
+  <label><input type="checkbox" id="toggle-netfail" data-testid="toggle-netfail"> Simulate network failure</label>
+  <button class="btn secondary" id="btn-reset" data-testid="btn-reset" type="button">Reset portal</button>
+</div>
+
+<main>
+  <div class="stepper" id="stepper" aria-label="Progress">
+    <span data-s="form" class="active">1 · Form</span>
+    <span data-s="review">2 · Review</span>
+    <span data-s="checkpoints">3 · Verification</span>
+    <span data-s="appointment">4 · Appointment</span>
+    <span data-s="final">5 · Confirm</span>
+    <span data-s="done">6 · Done</span>
+  </div>
+
+  <div id="global-alert" class="alert error" hidden data-testid="global-alert"></div>
+
+  <!-- ============ STEP 1: FORM ============ -->
+  <section class="card" data-step="form" data-testid="step-form">
+    <h2>Service application form <span style="color:var(--muted);font-weight:400;font-size:13px;">(SIMULATED)</span></h2>
+    <p class="sub">Fields marked <span style="color:var(--danger)">*</span> are required. Nothing leaves your browser.</p>
+
+    <div class="field" id="f-fullName">
+      <label for="fullName" data-label-key="fullName">Full name <span class="req">*</span></label>
+      <input id="fullName" data-testid="field-fullName" type="text" autocomplete="off" placeholder="e.g. Abebe Tesfaye">
+      <div class="err">Full name is required.</div>
+    </div>
+
+    <div class="row">
+      <div class="field" id="f-dob">
+        <label for="dob" data-label-key="dob">Date of birth <span class="req">*</span></label>
+        <input id="dob" data-testid="field-dob" type="date">
+        <div class="err">Date of birth is required.</div>
+      </div>
+      <div class="field" id="f-phone">
+        <label for="phone" data-label-key="phone">Phone number <span class="req">*</span></label>
+        <input id="phone" data-testid="field-phone" type="tel" autocomplete="off" placeholder="e.g. 0912345678">
+        <div class="err">Phone number is required.</div>
+      </div>
+    </div>
+
+    <div class="field" id="f-nationalId">
+      <label for="nationalId" data-label-key="nationalId">National ID number <span class="req">*</span></label>
+      <input id="nationalId" data-testid="field-nationalId" type="text" inputmode="numeric" autocomplete="off" placeholder="8 digits">
+      <div class="err">Enter an 8-digit ID number.</div>
+    </div>
+
+    <div class="field" id="f-serviceType">
+      <label for="serviceType" data-label-key="serviceType">Service requested <span class="req">*</span></label>
+      <select id="serviceType" data-testid="field-serviceType">
+        <option value="">— choose a service —</option>
+        <option value="passport">Passport</option>
+        <option value="idcard">National ID card</option>
+        <option value="business">Business license</option>
+      </select>
+      <div class="err">Choose a service.</div>
+    </div>
+
+    <!-- conditional fields -->
+    <div class="field" id="f-passportPrev" hidden>
+      <label for="passportPrev" data-label-key="passportPrev">Previous passport number <span class="req">*</span></label>
+      <input id="passportPrev" data-testid="field-passportPrev" type="text" autocomplete="off">
+      <div class="err">Previous passport number is required for passport service.</div>
+    </div>
+    <div class="field" id="f-birthPlace" hidden>
+      <label for="birthPlace" data-label-key="birthPlace">Place of birth <span class="req">*</span></label>
+      <input id="birthPlace" data-testid="field-birthPlace" type="text" autocomplete="off">
+      <div class="err">Place of birth is required for ID card service.</div>
+    </div>
+    <div class="field" id="f-tradeName" hidden>
+      <label for="tradeName" data-label-key="tradeName">Trade name <span class="req">*</span></label>
+      <input id="tradeName" data-testid="field-tradeName" type="text" autocomplete="off">
+      <div class="err">Trade name is required for business license service.</div>
+    </div>
+
+    <div class="field" id="f-address">
+      <label for="address" data-label-key="address">Address <span class="opt">(optional)</span></label>
+      <input id="address" data-testid="field-address" type="text" autocomplete="off">
+    </div>
+
+    <div class="field" id="f-notes">
+      <label for="notes" data-label-key="notes">Additional notes <span class="opt">(optional)</span></label>
+      <textarea id="notes" data-testid="field-notes" rows="2"></textarea>
+    </div>
+
+    <div class="field" id="f-docUpload">
+      <label for="docUpload" data-label-key="docUpload">Supporting document <span class="opt">(optional — SIMULATED upload)</span></label>
+      <input id="docUpload" data-testid="field-docUpload" type="file">
+      <div><span class="filechip" id="filechip" hidden><span id="filename"></span><button type="button" id="file-remove" aria-label="Remove file">✕</button></span></div>
+      <div class="err" style="display:block;color:var(--muted)">The file stays in your browser; nothing is uploaded.</div>
+    </div>
+
+    <div id="conflict-panel" class="alert warn" hidden data-testid="conflict-panel">
+      <strong>SIMULATED data conflict.</strong> The name on record for this ID
+      number does not match what you entered (fake check).
+      <div class="btnrow">
+        <button class="btn secondary" type="button" id="btn-conflict-keep" data-testid="btn-conflict-keep">Use my entered data anyway</button>
+        <button class="btn secondary" type="button" id="btn-conflict-edit" data-testid="btn-conflict-edit">Go back and edit</button>
+      </div>
+    </div>
+
+    <div class="btnrow">
+      <button class="btn" type="button" id="btn-to-review" data-testid="btn-to-review">Continue to review</button>
+    </div>
+  </section>
+
+  <!-- ============ STEP 2: REVIEW ============ -->
+  <section class="card" data-step="review" data-testid="step-review" hidden>
+    <h2>Review your information <span style="color:var(--muted);font-weight:400;font-size:13px;">(SIMULATED)</span></h2>
+    <p class="sub">Check everything before verification. Nothing has been sent anywhere.</p>
+    <table class="review" data-testid="review-table"><tbody id="review-body"></tbody></table>
+    <div class="btnrow">
+      <button class="btn secondary" type="button" id="btn-back-form" data-testid="btn-back-form">Back to form</button>
+      <button class="btn" type="button" id="btn-to-checkpoints" data-testid="btn-to-checkpoints">Continue to verification</button>
+    </div>
+  </section>
+
+  <!-- ============ STEP 3: CHECKPOINTS ============ -->
+  <section class="card" data-step="checkpoints" data-testid="step-checkpoints" hidden>
+    <h2>Verification checkpoints <span style="color:var(--muted);font-weight:400;font-size:13px;">(ALL SIMULATED)</span></h2>
+    <p class="sub">Complete each checkpoint. These stand in for the human-approval steps the agent must never bypass.</p>
+
+    <div class="card" style="margin-bottom:12px;">
+      <h2 style="font-size:15px;">1 · One-time passcode (SIMULATED)</h2>
+      <p class="sub">Sent to <span id="otp-phone" data-testid="otp-phone">—</span>. <strong>Any 6 digits are accepted.</strong></p>
+      <div class="btnrow" style="margin-top:0;">
+        <button class="btn secondary" type="button" id="btn-send-otp" data-testid="btn-send-otp">Send code</button>
+      </div>
+      <div id="otp-sent" hidden>
+        <div class="otp-box" data-testid="otp-code-display">······</div>
+        <p class="sub" style="margin-bottom:8px;">SIMULATED: the code is shown on screen so the test can proceed.</p>
+        <div class="field" id="f-otp" style="margin-bottom:8px;">
+          <label for="otp">Enter the 6-digit code</label>
+          <input id="otp" data-testid="field-otp" type="text" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="6 digits">
+          <div class="err">Enter any 6 digits.</div>
+        </div>
+        <button class="btn secondary" type="button" id="btn-verify-otp" data-testid="btn-verify-otp">Verify code</button>
+      </div>
+      <div id="otp-ok" class="alert ok" hidden data-testid="otp-ok" style="margin:12px 0 0;">✓ Phone verified (SIMULATED).</div>
+    </div>
+
+    <div class="card" style="margin-bottom:12px;">
+      <h2 style="font-size:15px;">2 · CAPTCHA (SIMULATED)</h2>
+      <label style="display:flex;gap:10px;align-items:center;font-size:15px;cursor:pointer;">
+        <input type="checkbox" id="captcha" data-testid="field-captcha"> I'm not a robot <span style="color:var(--muted);font-size:13px;">(SIMULATED check)</span>
+      </label>
+    </div>
+
+    <div class="card" style="margin-bottom:0;">
+      <h2 style="font-size:15px;">3 · Payment (SIMULATED — no real charge)</h2>
+      <p class="sub">Amount due: <strong>ETB 200.00</strong> (fake). No money moves.</p>
+      <div class="field" style="margin-bottom:8px;">
+        <label for="paymethod">Payment method</label>
+        <select id="paymethod" data-testid="field-paymethod">
+          <option value="telebirr">Telebirr (SIMULATED)</option>
+          <option value="chapa">Chapa (SIMULATED)</option>
+          <option value="card">Card (SIMULATED)</option>
+        </select>
+      </div>
+      <button class="btn secondary" type="button" id="btn-pay" data-testid="btn-pay">Pay ETB 200.00 (SIMULATED)</button>
+      <div id="pay-ok" class="alert ok" hidden data-testid="pay-ok" style="margin:12px 0 0;">✓ Payment recorded (SIMULATED). Receipt <span data-testid="pay-receipt">MOCK-RCPT-0000</span>.</div>
+    </div>
+
+    <div class="btnrow">
+      <button class="btn secondary" type="button" id="btn-back-review" data-testid="btn-back-review">Back to review</button>
+      <button class="btn" type="button" id="btn-to-appointment" data-testid="btn-to-appointment">Continue to appointment</button>
+    </div>
+  </section>
+
+  <!-- ============ STEP 4: APPOINTMENT ============ -->
+  <section class="card" data-step="appointment" data-testid="step-appointment" hidden>
+    <h2>Pick an appointment slot <span style="color:var(--muted);font-weight:400;font-size:13px;">(SIMULATED)</span></h2>
+    <p class="sub">Slots are generated for upcoming weekdays. Nothing is really booked.</p>
+    <div class="slots" id="slots" data-testid="slot-list"></div>
+    <div class="field" id="f-slot"><div class="err">Choose a slot.</div></div>
+    <div class="btnrow">
+      <button class="btn secondary" type="button" id="btn-back-checkpoints" data-testid="btn-back-checkpoints">Back to verification</button>
+      <button class="btn" type="button" id="btn-to-final" data-testid="btn-to-final">Continue to final review</button>
+    </div>
+  </section>
+
+  <!-- ============ STEP 5: FINAL REVIEW ============ -->
+  <section class="card" data-step="final" data-testid="step-final" hidden>
+    <h2>Final review <span style="color:var(--muted);font-weight:400;font-size:13px;">(SIMULATED)</span></h2>
+    <p class="sub">Last chance to go back. Confirming here still submits <strong>nothing real</strong>.</p>
+    <table class="review"><tbody id="final-body"></tbody></table>
+    <div class="btnrow">
+      <button class="btn secondary" type="button" id="btn-back-appointment" data-testid="btn-back-appointment">Back to appointment</button>
+      <button class="btn" type="button" id="btn-confirm" data-testid="btn-confirm">Confirm application (SIMULATED)</button>
+    </div>
+  </section>
+
+  <!-- ============ STEP 6: DONE ============ -->
+  <section class="card" data-step="done" data-testid="step-done" hidden>
+    <h2>Application received <span style="color:var(--muted);font-weight:400;font-size:13px;">(SIMULATED)</span></h2>
+    <p class="sub">This confirmation is fake and exists only so the agent has an end state to verify.</p>
+    <div class="ref" data-testid="confirmation-ref">MOCK-REF-000000</div>
+    <p style="font-size:14px;margin-top:12px;">Keep this reference for your (fake) records. No real application was submitted.</p>
+    <table class="review"><tbody id="done-body"></tbody></table>
+    <div class="btnrow">
+      <button class="btn secondary" type="button" id="btn-startover" data-testid="btn-startover">Start a new application</button>
+    </div>
+  </section>
+</main>
+
+<div id="toast" role="status"></div>
+
+<footer>MOCK PORTAL · built for ETHIO agent testing · not affiliated with any government · no real data handled</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ---------- tiny state ---------- */
+  var state = {
+    step: 'form',
+    labelsAlt: false,
+    netFail: false,
+    conflictAck: false,
+    otpOk: false,
+    payOk: false,
+    payReceipt: '',
+    slot: '',
+    ref: '',
+    fileName: '',
+  };
+
+  var LABELS = {
+    fullName:     ['Full name', 'Applicant full name'],
+    dob:          ['Date of birth', 'Birth date'],
+    phone:        ['Phone number', 'Mobile contact'],
+    nationalId:   ['National ID number', 'National ID no.'],
+    serviceType:  ['Service requested', 'Type of service'],
+    passportPrev: ['Previous passport number', 'Old passport no.'],
+    birthPlace:   ['Place of birth', 'Birthplace'],
+    tradeName:    ['Trade name', 'Business trade name'],
+    address:      ['Address', 'Residential address'],
+    notes:        ['Additional notes', 'Extra notes'],
+    docUpload:    ['Supporting document', 'Attach supporting document'],
+  };
+
+  var STEP_TITLES = {
+    form: 'Step 1 of 6: Application form',
+    review: 'Step 2 of 6: Review',
+    checkpoints: 'Step 3 of 6: Verification',
+    appointment: 'Step 4 of 6: Appointment',
+    final: 'Step 5 of 6: Final review',
+    done: 'Step 6 of 6: Confirmation',
+  };
+  var STEP_ORDER = ['form', 'review', 'checkpoints', 'appointment', 'final', 'done'];
+
+  function $(id) { return document.getElementById(id); }
+  function val(id) { return $(id).value.trim(); }
+
+  function toast(msg) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.style.display = 'block';
+    clearTimeout(t._h);
+    t._h = setTimeout(function () { t.style.display = 'none'; }, 3200);
+  }
+
+  function showAlert(msg) {
+    var a = $('global-alert');
+    a.innerHTML = '<strong>SIMULATED portal message:</strong> ' + msg;
+    a.hidden = false;
+  }
+  function hideAlert() { $('global-alert').hidden = true; }
+
+  /* Fake "server" round-trip: short delay, fails when the toggle is on. */
+  function fakeServer(label) {
+    return new Promise(function (resolve, reject) {
+      setTimeout(function () {
+        if (state.netFail) {
+          reject(new Error('Network request failed (SIMULATED). Turn off "Simulate network failure" and retry.'));
+        } else {
+          resolve(label || 'ok');
+        }
+      }, 600);
+    });
+  }
+
+  /* ---------- navigation ---------- */
+  function go(step) {
+    state.step = step;
+    document.querySelectorAll('[data-step]').forEach(function (s) {
+      s.hidden = s.getAttribute('data-step') !== step;
+    });
+    document.querySelectorAll('#stepper span').forEach(function (el) {
+      var s = el.getAttribute('data-s');
+      el.className = s === step ? 'active'
+        : (STEP_ORDER.indexOf(s) < STEP_ORDER.indexOf(step) ? 'done' : '');
+    });
+    document.title = 'Mock Portal — ' + STEP_TITLES[step];
+    hideAlert();
+    window.scrollTo(0, 0);
+  }
+
+  /* ---------- dynamic labels ---------- */
+  function applyLabels() {
+    Object.keys(LABELS).forEach(function (key) {
+      var label = document.querySelector('label[data-label-key="' + key + '"]');
+      if (!label) return;
+      var text = LABELS[key][state.labelsAlt ? 1 : 0];
+      var req = label.querySelector('.req');
+      var opt = label.querySelector('.opt');
+      label.childNodes[0].textContent = text + ' ';
+      if (!req && !opt) label.textContent = text;
+    });
+  }
+  $('toggle-labels').addEventListener('change', function (e) {
+    state.labelsAlt = e.target.checked;
+    applyLabels();
+    toast(state.labelsAlt ? 'Field labels renamed (SIMULATED dynamic labels).'
+                          : 'Field labels restored.');
+  });
+
+  /* ---------- network failure toggle ---------- */
+  $('toggle-netfail').addEventListener('change', function (e) {
+    state.netFail = e.target.checked;
+    toast(state.netFail ? 'Network failure simulation ON: fake server calls will fail.'
+                        : 'Network failure simulation OFF.');
+  });
+
+  /* ---------- conditional fields ---------- */
+  var CONDITIONAL = { passport: 'f-passportPrev', idcard: 'f-birthPlace', business: 'f-tradeName' };
+  $('serviceType').addEventListener('change', function (e) {
+    Object.keys(CONDITIONAL).forEach(function (k) {
+      var wrap = $(CONDITIONAL[k]);
+      var show = e.target.value === k;
+      wrap.hidden = !show;
+      if (!show) wrap.querySelector('input').value = '';
+    });
+  });
+
+  /* ---------- fake file upload ---------- */
+  $('docUpload').addEventListener('change', function (e) {
+    var f = e.target.files[0];
+    if (f) {
+      state.fileName = f.name;
+      $('filename').textContent = f.name + ' (SIMULATED — stays in your browser)';
+      $('filechip').hidden = false;
+    }
+  });
+  $('file-remove').addEventListener('click', function () {
+    $('docUpload').value = '';
+    state.fileName = '';
+    $('filechip').hidden = true;
+  });
+
+  /* ---------- validation ---------- */
+  function markInvalid(wrapId, invalid) {
+    $(wrapId).classList.toggle('invalid', !!invalid);
+    return !invalid;
+  }
+  function validateForm() {
+    var ok = true;
+    ok = markInvalid('f-fullName', val('fullName') === '') && ok;
+    ok = markInvalid('f-dob', val('dob') === '') && ok;
+    ok = markInvalid('f-phone', val('phone') === '') && ok;
+    ok = markInvalid('f-nationalId', !/^\d{8}$/.test(val('nationalId'))) && ok;
+    ok = markInvalid('f-serviceType', val('serviceType') === '') && ok;
+    var svc = val('serviceType');
+    if (svc === 'passport') ok = markInvalid('f-passportPrev', val('passportPrev') === '') && ok;
+    if (svc === 'idcard')   ok = markInvalid('f-birthPlace', val('birthPlace') === '') && ok;
+    if (svc === 'business') ok = markInvalid('f-tradeName', val('tradeName') === '') && ok;
+    if (!ok) showAlert('Missing or invalid required information (SIMULATED). Fix the highlighted fields.');
+    return ok;
+  }
+
+  /* ---------- conflict (SIMULATED): ID starting with 9 ---------- */
+  function maybeConflict() {
+    var id = val('nationalId');
+    if (/^9/.test(id) && !state.conflictAck) {
+      $('conflict-panel').hidden = false;
+      showAlert('A SIMULATED data conflict needs your decision before continuing.');
+      return true;
+    }
+    return false;
+  }
+  $('btn-conflict-keep').addEventListener('click', function () {
+    state.conflictAck = true;
+    $('conflict-panel').hidden = true;
+    proceedToReview();
+  });
+  $('btn-conflict-edit').addEventListener('click', function () {
+    $('conflict-panel').hidden = true;
+    $('nationalId').focus();
+  });
+
+  /* ---------- review tables ---------- */
+  function row(k, v) {
+    return '<tr><th>' + k + '</th><td>' + (v === '' ? '<i style="color:var(--muted)">—</i>' : v) + '</td></tr>';
+  }
+  function serviceLabel(v) {
+    return { passport: 'Passport', idcard: 'National ID card', business: 'Business license' }[v] || v;
+  }
+  function collectRows() {
+    var svc = val('serviceType');
+    var rows = row('Full name', esc(val('fullName')))
+      + row('Date of birth', esc(val('dob')))
+      + row('Phone number', esc(val('phone')))
+      + row('National ID number', esc(val('nationalId')))
+      + row('Service requested', esc(serviceLabel(svc)));
+    if (svc === 'passport') rows += row('Previous passport number', esc(val('passportPrev')));
+    if (svc === 'idcard') rows += row('Place of birth', esc(val('birthPlace')));
+    if (svc === 'business') rows += row('Trade name', esc(val('tradeName')));
+    rows += row('Address', esc(val('address')))
+      + row('Additional notes', esc(val('notes')))
+      + row('Supporting document', esc(state.fileName || ''));
+    return rows;
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function proceedToReview() {
+    $('review-body').innerHTML = collectRows();
+    go('review');
+  }
+
+  $('btn-to-review').addEventListener('click', function () {
+    hideAlert();
+    if (!validateForm()) return;
+    if (maybeConflict()) return;
+    proceedToReview();
+  });
+  $('btn-back-form').addEventListener('click', function () { go('form'); });
+
+  /* ---------- checkpoints ---------- */
+  $('btn-to-checkpoints').addEventListener('click', function () {
+    $('otp-phone').textContent = val('phone') || '(no phone entered)';
+    go('checkpoints');
+  });
+  $('btn-back-review').addEventListener('click', function () { go('review'); });
+
+  var currentOtp = '';
+  $('btn-send-otp').addEventListener('click', function () {
+    var btn = this;
+    btn.disabled = true;
+    fakeServer().then(function () {
+      currentOtp = String(Math.floor(100000 + Math.random() * 900000));
+      $('otp-code-display').textContent = currentOtp.split('').join(' ');
+      $('otp-sent').hidden = false;
+      toast('SIMULATED code sent. Any 6 digits work.');
+    }).catch(function (err) { showAlert(err.message); })
+      .finally(function () { btn.disabled = false; });
+  });
+  $('btn-verify-otp').addEventListener('click', function () {
+    var ok = /^\d{6}$/.test(val('otp')); // any 6 digits accepted (SIMULATED)
+    markInvalid('f-otp', !ok);
+    if (ok) {
+      state.otpOk = true;
+      $('otp-ok').hidden = false;
+      toast('Phone verified (SIMULATED).');
+    } else {
+      showAlert('Enter any 6 digits (SIMULATED OTP).');
+    }
+  });
+
+  $('btn-pay').addEventListener('click', function () {
+    var btn = this;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Processing (SIMULATED)…';
+    fakeServer().then(function () {
+      state.payOk = true;
+      state.payReceipt = 'MOCK-RCPT-' + String(Math.floor(1000 + Math.random() * 9000));
+      $('pay-receipt').textContent = state.payReceipt;
+      $('pay-ok').hidden = false;
+      toast('Payment recorded (SIMULATED). No real charge.');
+    }).catch(function (err) { showAlert(err.message); })
+      .finally(function () {
+        btn.disabled = false;
+        btn.textContent = 'Pay ETB 200.00 (SIMULATED)';
+      });
+  });
+
+  $('btn-to-appointment').addEventListener('click', function () {
+    hideAlert();
+    var missing = [];
+    if (!state.otpOk) missing.push('OTP verification');
+    if (!$('captcha').checked) missing.push('CAPTCHA checkbox');
+    if (!state.payOk) missing.push('SIMULATED payment');
+    if (missing.length) {
+      showAlert('Complete first (SIMULATED): ' + missing.join(', ') + '.');
+      return;
+    }
+    buildSlots();
+    go('appointment');
+  });
+  $('btn-back-checkpoints').addEventListener('click', function () { go('checkpoints'); });
+
+  /* ---------- appointment slots (upcoming weekdays) ---------- */
+  function buildSlots() {
+    var box = $('slots');
+    box.innerHTML = '';
+    var d = new Date();
+    var added = 0;
+    var hours = ['09:00', '11:00', '14:00'];
+    while (added < 6) {
+      d.setDate(d.getDate() + 1);
+      var dow = d.getDay();
+      if (dow === 0 || dow === 6) continue; // weekdays only
+      hours.forEach(function (h) {
+        if (added >= 6) return;
+        var label = d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) + ' · ' + h;
+        var id = 'slot-' + added;
+        var lab = document.createElement('label');
+        lab.innerHTML = '<input type="radio" name="slot" value="' + label + '" data-testid="' + id + '"> ' + label + ' <span style="color:var(--muted);font-size:12px;">(SIMULATED)</span>';
+        box.appendChild(lab);
+        added++;
+      });
+    }
+    box.addEventListener('change', function (e) {
+      if (e.target.name === 'slot') {
+        state.slot = e.target.value;
+        $('f-slot').classList.remove('invalid');
+      }
+    });
+  }
+
+  $('btn-to-final').addEventListener('click', function () {
+    if (!state.slot) {
+      $('f-slot').classList.add('invalid');
+      showAlert('Choose an appointment slot (SIMULATED).');
+      return;
+    }
+    $('final-body').innerHTML = collectRows()
+      + row('Appointment slot', esc(state.slot))
+      + row('Payment receipt', esc(state.payReceipt));
+    go('final');
+  });
+  $('btn-back-appointment').addEventListener('click', function () { go('appointment'); });
+
+  /* ---------- confirm ---------- */
+  $('btn-confirm').addEventListener('click', function () {
+    var btn = this;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Confirming (SIMULATED)…';
+    fakeServer().then(function () {
+      state.ref = 'MOCK-REF-' + Array.from({ length: 6 }, function () {
+        return 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 31)];
+      }).join('');
+      document.querySelector('[data-testid="confirmation-ref"]').textContent = state.ref;
+      $('done-body').innerHTML = collectRows()
+        + row('Appointment slot', esc(state.slot))
+        + row('Payment receipt', esc(state.payReceipt));
+      go('done');
+    }).catch(function (err) { showAlert(err.message); })
+      .finally(function () {
+        btn.disabled = false;
+        btn.textContent = 'Confirm application (SIMULATED)';
+      });
+  });
+
+  /* ---------- reset ---------- */
+  $('btn-startover').addEventListener('click', resetAll);
+  $('btn-reset').addEventListener('click', resetAll);
+  function resetAll() {
+    document.querySelectorAll('input[type=text], input[type=tel], input[type=date], textarea').forEach(function (el) { el.value = ''; });
+    $('serviceType').value = '';
+    $('serviceType').dispatchEvent(new Event('change'));
+    $('docUpload').value = '';
+    state.fileName = ''; $('filechip').hidden = true;
+    $('captcha').checked = false;
+    $('otp-sent').hidden = true; $('otp-ok').hidden = true; state.otpOk = false;
+    $('pay-ok').hidden = true; state.payOk = false; state.payReceipt = '';
+    state.slot = ''; state.ref = ''; state.conflictAck = false;
+    $('conflict-panel').hidden = true;
+    document.querySelectorAll('.field.invalid').forEach(function (el) { el.classList.remove('invalid'); });
+    state.labelsAlt = false; $('toggle-labels').checked = false; applyLabels();
+    state.netFail = false; $('toggle-netfail').checked = false;
+    hideAlert();
+    go('form');
+    toast('Portal reset (SIMULATED).');
+  }
+
+  applyLabels();
+})();
+</script>
+</body>
+</html>
