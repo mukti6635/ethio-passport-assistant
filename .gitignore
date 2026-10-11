@@ -183,7 +183,7 @@ AgentHistoryList.json
 .gradio/
 
 # For Docker
-data/
+/data/
 
 # For Config Files (Current Settings)
 .config.pkl
