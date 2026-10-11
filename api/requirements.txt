@@ -1,0 +1,8 @@
+# ETHIO gateway dependencies.
+# browser-use itself is NOT listed here: it comes from the repository root
+# requirements.txt (browser-use==0.1.48), so install that first.
+fastapi
+uvicorn[standard]
+pydantic
+httpx  # only needed to run the contract tests (test_gateway.py)
+pytest  # only needed to run the contract tests

@@ -1,0 +1,430 @@
+"""ETHIO <-> browser-use gateway.
+
+A small FastAPI service that exposes the browser-use agent over HTTP so the
+ETHIO Flutter app can start browser tasks, follow their progress, pause for
+human checkpoints (OTP / CAPTCHA / payment / legal review), resume, cancel,
+and fetch verified evidence.
+
+URL layout (matches what the Flutter `WebUiHttpAdapter` builds as
+`{path}/{job_id}`)::
+
+    POST /tasks                 -> {"job_id": str}            (202)
+    GET  /tasks/status/{job_id} -> {"state": str, "log": [...]}
+    POST /tasks/pause/{job_id}  -> {"ok": true}
+    POST /tasks/resume/{job_id} -> {"ok": true}
+    POST /tasks/cancel/{job_id} -> {"ok": true}
+    GET  /tasks/evidence/{job_id} -> {"final_result": str|null,
+                                      "artifacts": [...], "extracted": {...}}
+    GET  /health                -> {"ok": true, "version": "1.0.0"}
+
+Run with::
+
+    uvicorn gateway:app --host 0.0.0.0 --port 8000
+
+See README.md for the full environment-variable list.
+"""
+
+import asyncio
+import logging
+import os
+import uuid
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from pydantic import BaseModel
+
+logger = logging.getLogger("ethio.gateway")
+
+VERSION = "1.0.0"
+
+
+# ---------------------------------------------------------------------------
+# Job model
+# ---------------------------------------------------------------------------
+
+
+class JobState(str, Enum):
+    """State vocabulary the Flutter client understands."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    PAUSED = "paused"
+    AWAITING_HUMAN = "awaiting_human"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    TIMED_OUT = "timed_out"
+
+
+TERMINAL_STATES = {
+    JobState.SUCCEEDED,
+    JobState.FAILED,
+    JobState.CANCELLED,
+    JobState.TIMED_OUT,
+}
+
+
+@dataclass
+class Job:
+    """One browser-automation job. Lives only in this process's memory."""
+
+    job_id: str
+    session_id: str  # value of the X-Ethio-Session header: isolates users
+    goal: str
+    inputs: Dict[str, str]
+    state: JobState = JobState.QUEUED
+    log: List[str] = field(default_factory=list)
+    checkpoint: Optional[str] = None  # e.g. "otp" while awaiting_human
+    final_result: Optional[str] = None
+    error: Optional[str] = None
+    agent: Any = None  # browser-use Agent, created when the job starts
+    task: Optional["asyncio.Task[None]"] = None  # background runner
+
+
+# In-memory job registry. Fine for a single gateway process; a multi-worker
+# deployment would need a shared store (Redis/Postgres) instead.
+_JOBS: Dict[str, Job] = {}
+
+
+# ---------------------------------------------------------------------------
+# Request models
+# ---------------------------------------------------------------------------
+
+
+class StartTaskBody(BaseModel):
+    goal: str
+    inputs: Dict[str, str] = {}
+    session_id: str = ""  # echoed by the client; the header is authoritative
+
+
+class PauseBody(BaseModel):
+    checkpoint: Optional[str] = None
+    session_id: str = ""
+
+
+class ResumeBody(BaseModel):
+    session_id: str = ""
+
+
+class CancelBody(BaseModel):
+    session_id: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Auth + session isolation
+# ---------------------------------------------------------------------------
+
+
+async def require_auth(request: Request) -> str:
+    """Dependency: valid Bearer token + X-Ethio-Session header.
+
+    Returns the session id. Fails closed (500) when the server itself is
+    misconfigured, so the gateway can never run without authentication.
+    """
+    api_key = os.environ.get("GATEWAY_API_KEY")
+    if not api_key:
+        logger.error("GATEWAY_API_KEY is not set - refusing to serve")
+        raise HTTPException(
+            status_code=500, detail="server misconfigured: auth not set up"
+        )
+    auth = request.headers.get("authorization", "")
+    if auth != f"Bearer {api_key}":
+        raise HTTPException(status_code=401, detail="unauthorized")
+    session_id = request.headers.get("x-ethio-session", "").strip()
+    if not session_id:
+        raise HTTPException(
+            status_code=400, detail="missing X-Ethio-Session header"
+        )
+    return session_id
+
+
+def _check_body_session(body_session: str, header_session: str) -> None:
+    """The client sends session_id in the body too; it must match the header."""
+    if body_session and body_session != header_session:
+        raise HTTPException(
+            status_code=400,
+            detail="session_id in body does not match X-Ethio-Session header",
+        )
+
+
+def _get_job(job_id: str, session_id: str) -> Job:
+    """Fetch a job, or 404. A session can never see another session's jobs."""
+    job = _JOBS.get(job_id)
+    if job is None or job.session_id != session_id:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
+# ---------------------------------------------------------------------------
+# browser-use wiring (imports are lazy so the module loads without the
+# browser-use package installed - tests inject a fake instead)
+# ---------------------------------------------------------------------------
+
+
+def _build_llm() -> Any:
+    """Chat model for the agent. Provider choice is env-only."""
+    from browser_use.llm import ChatOpenAI
+
+    model = os.environ.get("ETHIO_LLM_MODEL", "gpt-4o")
+    # OPENAI_API_KEY is read from the environment by the client itself.
+    return ChatOpenAI(model=model)
+
+
+def _build_browser() -> Any:
+    """A fresh headless browser for one job."""
+    from browser_use.browser.browser import Browser, BrowserConfig
+
+    headless_raw = os.environ.get("ETHIO_HEADLESS", "true").lower()
+    headless = headless_raw not in ("0", "false", "no", "off")
+    return Browser(config=BrowserConfig(headless=headless))
+
+
+def _summarize_step(agent_output: Any, step_number: int) -> str:
+    """One short log line per agent step. Never raises."""
+    try:
+        current = getattr(agent_output, "current_state", None)
+        goal = (
+            getattr(current, "next_goal", None)
+            or getattr(current, "evaluation_previous_goal", None)
+            or ""
+        )
+        goal = str(goal).strip().replace("\n", " ")[:160]
+        actions = getattr(agent_output, "action", None) or []
+        names: List[str] = []
+        for action in actions:
+            if isinstance(action, dict) and action:
+                names.append(str(next(iter(action))))
+            else:
+                names.append(type(action).__name__)
+        action_part = ", ".join(names[:3]) if names else "thinking"
+        text = f"step {step_number}: {action_part}"
+        if goal:
+            text += f" - {goal}"
+        return text[:300]
+    except Exception as exc:  # never let logging break the run
+        return f"step {step_number}: (unreadable step: {type(exc).__name__})"
+
+
+def _build_agent(job: Job, on_step: Any) -> Any:
+    """Create the browser-use Agent for a job. Called inside the runner."""
+    import browser_use
+
+    llm = _build_llm()
+    browser = _build_browser()
+    task_text = job.goal
+    if job.inputs:
+        lines = "\n".join(f"- {k}: {v}" for k, v in job.inputs.items())
+        task_text = f"{task_text}\n\nInputs:\n{lines}"
+    max_steps = int(os.environ.get("ETHIO_MAX_STEPS", "50"))
+    agent = browser_use.Agent(
+        task=task_text,
+        llm=llm,
+        browser=browser,
+        register_new_step_callback=on_step,
+        max_actions_per_step=5,
+    )
+    # stash for cleanup; not part of any public API
+    agent._ethio_browser = browser
+    agent._ethio_max_steps = max_steps
+    return agent
+
+
+def _safe_stop(agent: Any) -> None:
+    try:
+        agent.stop()
+    except Exception as exc:
+        logger.warning("agent.stop() raised: %s", type(exc).__name__)
+
+
+async def _safe_close_browser(agent: Any) -> None:
+    browser = getattr(agent, "_ethio_browser", None)
+    if browser is None:
+        return
+    try:
+        await browser.close()
+    except Exception as exc:
+        logger.warning("browser.close() raised: %s", type(exc).__name__)
+
+
+async def _run_job(job: Job) -> None:
+    """Background runner: executes the agent, enforces timeout, records."""
+    timeout_s = float(os.environ.get("ETHIO_JOB_TIMEOUT_S", "1200"))
+
+    async def on_step(browser_state: Any, agent_output: Any, step_no: int) -> None:
+        job.log.append(_summarize_step(agent_output, step_no))
+
+    try:
+        job.agent = _build_agent(job, on_step)
+    except Exception as exc:
+        job.state = JobState.FAILED
+        # Never put exception text from unknown sources in the log blindly;
+        # the type name plus a short message is enough for debugging.
+        job.error = f"{type(exc).__name__}: {str(exc)[:200]}"
+        job.log.append(f"failed to start: {job.error}")
+        logger.exception("job %s failed to start", job.job_id)
+        return
+
+    agent = job.agent
+    job.state = JobState.RUNNING
+    job.log.append("agent started")
+    logger.info("job %s running (timeout %ss)", job.job_id, timeout_s)
+
+    try:
+        history = await asyncio.wait_for(
+            agent.run(max_steps=agent._ethio_max_steps), timeout=timeout_s
+        )
+        # run() only returns when the agent finished on its own; a pause or
+        # cancel keeps it alive, so reaching here means it is done.
+        if job.state == JobState.RUNNING:
+            job.state = JobState.SUCCEEDED
+            job.log.append("agent finished successfully")
+        try:
+            job.final_result = history.final_result()
+        except Exception:
+            job.final_result = None
+    except asyncio.TimeoutError:
+        job.state = JobState.TIMED_OUT
+        job.error = f"timed out after {timeout_s:g}s"
+        job.log.append(job.error)
+        logger.warning("job %s timed out", job.job_id)
+        _safe_stop(agent)
+    except asyncio.CancelledError:
+        # Cancelled via POST /tasks/cancel/{id}: the endpoint already set the
+        # terminal state, so just make sure the agent is stopped.
+        _safe_stop(agent)
+        raise
+    except Exception as exc:
+        job.state = JobState.FAILED
+        job.error = f"{type(exc).__name__}: {str(exc)[:200]}"
+        job.log.append(f"failed: {job.error}")
+        logger.exception("job %s failed", job.job_id)
+    finally:
+        await _safe_close_browser(agent)
+
+
+# ---------------------------------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------------------------------
+
+app = FastAPI(title="ETHIO browser-use gateway", version=VERSION)
+
+
+@app.get("/health")
+async def health() -> Dict[str, Any]:
+    """No auth. For load balancers and the Flutter client's ping."""
+    return {"ok": True, "version": VERSION}
+
+
+@app.post("/tasks", status_code=202)
+async def start_task(
+    body: StartTaskBody, session_id: str = Depends(require_auth)
+) -> Dict[str, str]:
+    """Start a browser task. Returns immediately; poll /tasks/status/{id}."""
+    _check_body_session(body.session_id, session_id)
+    if not body.goal.strip():
+        raise HTTPException(status_code=400, detail="goal must not be empty")
+    job_id = uuid.uuid4().hex
+    job = Job(
+        job_id=job_id,
+        session_id=session_id,
+        goal=body.goal.strip(),
+        inputs=dict(body.inputs),
+    )
+    _JOBS[job_id] = job
+    job.task = asyncio.create_task(_run_job(job))
+    logger.info("job %s created for session %s", job_id, session_id[:8] + "...")
+    return {"job_id": job_id}
+
+
+@app.get("/tasks/status/{job_id}")
+async def job_status(
+    job_id: str, session_id: str = Depends(require_auth)
+) -> Dict[str, Any]:
+    job = _get_job(job_id, session_id)
+    return {"state": job.state.value, "log": list(job.log)}
+
+
+@app.post("/tasks/pause/{job_id}")
+async def pause_job(
+    job_id: str, body: PauseBody, session_id: str = Depends(require_auth)
+) -> Dict[str, bool]:
+    """Pause the agent. With a checkpoint name the job waits for the human
+    (state `awaiting_human`); otherwise it is a plain `paused`."""
+    _check_body_session(body.session_id, session_id)
+    job = _get_job(job_id, session_id)
+    if job.state in TERMINAL_STATES:
+        raise HTTPException(
+            status_code=409, detail=f"cannot pause a {job.state.value} job"
+        )
+    if job.state in (JobState.PAUSED, JobState.AWAITING_HUMAN):
+        return {"ok": True}  # already paused: harmless no-op
+    if job.state != JobState.RUNNING or job.agent is None:
+        raise HTTPException(status_code=409, detail="job is not running yet")
+    job.agent.pause()
+    if body.checkpoint:
+        job.state = JobState.AWAITING_HUMAN
+        job.checkpoint = body.checkpoint
+        job.log.append(f"paused for human checkpoint: {body.checkpoint}")
+    else:
+        job.state = JobState.PAUSED
+        job.log.append("paused by operator")
+    return {"ok": True}
+
+
+@app.post("/tasks/resume/{job_id}")
+async def resume_job(
+    job_id: str, body: ResumeBody, session_id: str = Depends(require_auth)
+) -> Dict[str, bool]:
+    _check_body_session(body.session_id, session_id)
+    job = _get_job(job_id, session_id)
+    if job.state in TERMINAL_STATES:
+        raise HTTPException(
+            status_code=409, detail=f"cannot resume a {job.state.value} job"
+        )
+    if job.state == JobState.RUNNING:
+        return {"ok": True}  # already running: harmless no-op
+    if job.state not in (JobState.PAUSED, JobState.AWAITING_HUMAN):
+        raise HTTPException(status_code=409, detail="job is not paused")
+    job.agent.resume()
+    job.state = JobState.RUNNING
+    job.checkpoint = None
+    job.log.append("resumed")
+    return {"ok": True}
+
+
+@app.post("/tasks/cancel/{job_id}")
+async def cancel_job(
+    job_id: str, body: CancelBody, session_id: str = Depends(require_auth)
+) -> Dict[str, bool]:
+    """Cancel a job. Idempotent: cancelling a terminal job is a no-op."""
+    _check_body_session(body.session_id, session_id)
+    job = _get_job(job_id, session_id)
+    if job.state in TERMINAL_STATES:
+        return {"ok": True}
+    job.state = JobState.CANCELLED
+    job.log.append("cancelled by operator")
+    if job.agent is not None:
+        _safe_stop(job.agent)
+    if job.task is not None and not job.task.done():
+        job.task.cancel()
+    return {"ok": True}
+
+
+@app.get("/tasks/evidence/{job_id}")
+async def job_evidence(
+    job_id: str, session_id: str = Depends(require_auth)
+) -> Dict[str, Any]:
+    """Verified outcome of a finished job. 404 until the job is terminal -
+    the gateway never invents evidence for a job that is still running."""
+    job = _get_job(job_id, session_id)
+    if job.state not in TERMINAL_STATES:
+        raise HTTPException(
+            status_code=404, detail="evidence not available yet"
+        )
+    return {
+        "final_result": job.final_result,
+        "artifacts": [],
+        "extracted": {},
+    }
