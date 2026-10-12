@@ -282,8 +282,9 @@ def _build_browser() -> Any:
     kwargs: dict = {"headless": headless}
     if os.path.exists(chrome_path):
         kwargs["chrome_instance_path"] = chrome_path
-    # Force DevTools onto IPv4; the sandbox resolves localhost to ::1 first.
-    kwargs["extra_browser_args"] = ["--remote-debugging-address=127.0.0.1"]
+    # Note: do NOT force --remote-debugging-address; Chrome's default
+    # localhost binding is dual-stack and matches browser-use's localhost
+    # CDP connection. Forcing IPv4-only breaks the ::1 resolution.
     return Browser(config=BrowserConfig(**kwargs))
 
 
