@@ -27,6 +27,9 @@ class FakeHistory:
     def final_result(self):
         return self._result
 
+    def is_successful(self):
+        return True
+
 
 class FakeStepOutput:
     """Junk step output: the gateway's summarizer must not crash on it."""

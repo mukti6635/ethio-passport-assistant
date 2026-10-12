@@ -258,7 +258,15 @@ def _build_browser() -> Any:
 
     headless_raw = os.environ.get("ETHIO_HEADLESS", "true").lower()
     headless = headless_raw not in ("0", "false", "no", "off")
-    return Browser(config=BrowserConfig(headless=headless))
+    # browser-use defaults to channel='chromium' (system Chrome); point it at
+    # Playwright's bundled Chromium instead. Overridable via env.
+    chrome_path = os.environ.get("ETHIO_CHROME_PATH") or (
+        os.path.expanduser("~/.cache/ms-playwright/chromium-1243/chrome-linux/chrome")
+    )
+    kwargs: dict = {"headless": headless}
+    if os.path.exists(chrome_path):
+        kwargs["chrome_instance_path"] = chrome_path
+    return Browser(config=BrowserConfig(**kwargs))
 
 
 def _summarize_step(agent_output: Any, step_number: int) -> str:
@@ -304,6 +312,9 @@ def _build_agent(job: Job, on_step: Any) -> Any:
         browser=browser,
         register_new_step_callback=on_step,
         max_actions_per_step=5,
+        # Memory (mem0 embeddings) needs an OpenAI key we don't have; the
+        # agent works fine without long-term memory for single tasks.
+        enable_memory=False,
     )
     # stash for cleanup; not part of any public API
     agent._ethio_browser = browser
@@ -360,8 +371,19 @@ async def _run_job(job: Job) -> None:
         # run() only returns when the agent finished on its own; a pause or
         # cancel keeps it alive, so reaching here means it is done.
         if job.state == JobState.RUNNING:
-            job.state = JobState.SUCCEEDED
-            job.log.append("agent finished successfully")
+            try:
+                successful = history.is_successful()
+            except Exception:
+                successful = None
+            # The agent can stop early (e.g. consecutive failures) without
+            # raising; only claim success when it says it succeeded.
+            if successful:
+                job.state = JobState.SUCCEEDED
+                job.log.append("agent finished successfully")
+            else:
+                job.state = JobState.FAILED
+                job.error = "agent stopped without completing the task"
+                job.log.append(job.error)
             _record_terminal(job)
         try:
             job.final_result = history.final_result()
