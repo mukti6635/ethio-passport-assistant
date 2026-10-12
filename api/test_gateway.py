@@ -431,6 +431,8 @@ def test_gemini_key_routes_to_google_openai_endpoint(
 def test_no_gemini_key_falls_back_to_openai(fake_browser_use, monkeypatch):
     """Without GEMINI_API_KEY the gateway keeps the previous OpenAI behavior."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    # Also disable the Secure Vault lookup (present in this sandbox).
+    monkeypatch.setattr(gateway, "_get_gemini_credential", lambda: None)
 
     created = {}
 

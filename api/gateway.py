@@ -27,6 +27,7 @@ See README.md for the full environment-variable list.
 import asyncio
 import logging
 import os
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -196,11 +197,35 @@ def _get_job(job_id: str, session_id: str) -> Job:
 GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 
+def _get_gemini_credential() -> Optional[str]:
+    """Resolve the Gemini credential: raw GEMINI_API_KEY env var, or the
+    Secure Vault surrogate (``hsurr:*``) which the egress proxy swaps for the
+    real key on the way out. The surrogate is fetched fresh per job so a
+    long-running gateway never uses a stale credential."""
+    raw = os.environ.get("GEMINI_API_KEY")
+    if raw:
+        return raw
+    # Vault-backed credential (this sandbox): ask authd for a surrogate.
+    try:
+        sys.path.insert(
+            0, "/opt/hatch/skills/skill-creator/bin"
+        )
+        from dynamic_credentials import dynamic_credential_entry
+
+        entry = dynamic_credential_entry("custom.google-gemini", "access_token")
+        surr = str(entry.get("surrogate", "")).strip()
+        return surr or None
+    except Exception as exc:  # authd unavailable (e.g. plain local dev)
+        logger.debug("no vault Gemini credential: %s", type(exc).__name__)
+        return None
+
+
 def _build_llm() -> Any:
     """Chat model for the agent. Provider choice is env-only.
 
-    - ``GEMINI_API_KEY`` set -> Gemini via Google's OpenAI-compatible
-      endpoint, model from ``ETHIO_LLM_MODEL`` (default ``gemini-3.8-flash``).
+    - Gemini credential available (``GEMINI_API_KEY`` env or Secure Vault)
+      -> Gemini via Google's OpenAI-compatible endpoint, model from
+      ``ETHIO_LLM_MODEL`` (default ``gemini-3.8-flash``).
     - Otherwise -> OpenAI, model from ``ETHIO_LLM_MODEL`` (default
       ``gpt-4o``), key from ``OPENAI_API_KEY``.
 
@@ -210,11 +235,16 @@ def _build_llm() -> Any:
     # project's own WebUI uses langchain_openai.ChatOpenAI instead.
     from langchain_openai import ChatOpenAI
 
-    gemini_key = os.environ.get("GEMINI_API_KEY")
+    # httpx chokes on the IPv6 "[::1]" entries in this sandbox's no_proxy;
+    # the egress proxy (needed for the vault surrogate) still applies.
+    os.environ.pop("no_proxy", None)
+    os.environ.pop("NO_PROXY", None)
+
+    gemini_key = _get_gemini_credential()
     if gemini_key:
         return ChatOpenAI(
             model=os.environ.get("ETHIO_LLM_MODEL", "gemini-3.8-flash"),
-            base_url=GEMINI_OPENAI_BASE_URL,
+            base_url=os.environ.get("ETHIO_LLM_BASE_URL", GEMINI_OPENAI_BASE_URL),
             api_key=gemini_key,
         )
     model = os.environ.get("ETHIO_LLM_MODEL", "gpt-4o")
