@@ -43,10 +43,28 @@
 
 ## What is NOT working / NOT verified
 
-### 🟡 P1: Browser agent CDP session — UNSTABLE
-**What:** Chrome launches reliably now, CDP connects, but browser-use 0.1.48's session drops with "Connection error" at Step 1.
-**Status:** Library-level issue in browser-use 0.1.48's CDP session management. Not fixable from the gateway.
-**Progress:** Fixed the Chrome launch (was the blocker); the remaining issue is session stability.
+### 🟢 P1: Browser agent — FIXED via browser-use 0.13.11 upgrade (tested 2026-10-12)
+**Root cause (confirmed):** browser-use 0.1.48's `Agent.run()` was incompatible with the current stack in two ways:
+1. The gateway passed `httpx.Client` but browser-use 0.13.x's `ChatOpenAI` requires `httpx.AsyncClient` → `ModelProviderError: Invalid 'http_client' argument`.
+2. browser-use's `ChatOpenAI` sends `frequency_penalty` by default; Gemini's OpenAI-compatible endpoint rejects it with `400: Unknown name "frequency_penalty"`.
+
+**Fix (in isolated worktree `upgrade-browser-use-test`, NOT on main):**
+- Upgraded browser-use 0.1.48 → 0.13.11 (isolated venv, worktree branch).
+- `api/gateway.py`: `_build_llm()` now uses `browser_use.llm.ChatOpenAI` with `httpx.AsyncClient` and `frequency_penalty=None`; `_build_browser()` uses `browser_use.Browser(cdp_url=...)` directly (0.13.x API); `_build_agent()` drops `enable_memory` (removed in 0.13.x).
+- `api/test_gateway.py`: mocks updated for new API; added regression test `test_llm_uses_async_client_and_no_frequency_penalty`.
+- **Tests:** 19/19 pass (18 original + 1 new regression test).
+
+**E2E verification (real agent vs mock portal):**
+- ✅ Agent connected to browser via CDP
+- ✅ Navigated to `http://127.0.0.1:8901/index.html`
+- ✅ Observed page, found Full Name input field
+- ✅ Returned verified evidence: placeholder text `'e.g. Abebe Tesfaye'`
+- ✅ `INFO [Agent] ✅ Task completed successfully`
+
+**Blockers:**
+- Gemini free-tier quota exhausted during testing (20 req/day limit; retry in ~9.5h). The fix itself is verified; further E2E runs need quota.
+- `gemini-3.8-flash` is consistently overloaded (503/timeout); `gemini-3.5-flash` works. Model is configurable via `ETHIO_LLM_MODEL`; production default unchanged.
+- Changes are in worktree only; **NOT merged to main, NOT pushed** (awaiting user authorization).
 
 ### 🟡 P1: Flutter compilation — VERIFIED ✅
 **What:** `HttpWebUiTransport` implementation and new tests.

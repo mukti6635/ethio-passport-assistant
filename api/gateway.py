@@ -255,10 +255,12 @@ def _build_llm() -> Any:
       ``gpt-4o``), key from ``OPENAI_API_KEY``.
 
     The key is never logged, never sent to clients, and never hard-coded.
+
+    Uses browser-use's own ChatOpenAI (0.13.x) which expects an
+    ``httpx.AsyncClient``. ``frequency_penalty`` is left unset because
+    Gemini's OpenAI-compatible endpoint rejects that field.
     """
-    # NOTE: browser-use 0.1.48 has no `browser_use.llm` module; the
-    # project's own WebUI uses langchain_openai.ChatOpenAI instead.
-    from langchain_openai import ChatOpenAI
+    from browser_use.llm import ChatOpenAI
     import httpx
 
     # The sandbox's egress proxy breaks Playwright's CDP WebSocket to
@@ -277,12 +279,18 @@ def _build_llm() -> Any:
 
     gemini_key = _get_gemini_credential()
     if gemini_key:
-        http_client = httpx.Client(proxy=proxy_url, timeout=120.0) if proxy_url else None
+        http_client = (
+            httpx.AsyncClient(proxy=proxy_url, timeout=120.0)
+            if proxy_url
+            else None
+        )
         return ChatOpenAI(
             model=os.environ.get("ETHIO_LLM_MODEL", "gemini-3.8-flash"),
             base_url=os.environ.get("ETHIO_LLM_BASE_URL", GEMINI_OPENAI_BASE_URL),
             api_key=gemini_key,
             http_client=http_client,
+            # Gemini's OpenAI-compatible endpoint rejects frequency_penalty.
+            frequency_penalty=None,
         )
     model = os.environ.get("ETHIO_LLM_MODEL", "gpt-4o")
     # OPENAI_API_KEY is read from the environment by the client itself.
@@ -293,16 +301,16 @@ def _build_browser() -> Any:
     """A fresh headless browser for one job.
 
     Launches Chrome ourselves with IPv4-only remote debugging, then hands
-    browser-use the CDP URL. This avoids browser-use 0.1.48's hardcoded
-    `localhost` CDP connections (which resolve to ::1 in this sandbox while
-    Chrome listens on 127.0.0.1).
+    browser-use the CDP URL. This avoids CDP connections to `localhost`
+    (which can resolve to ::1 in this sandbox while Chrome listens on
+    127.0.0.1).
     """
     import socket as _socket
     import subprocess
     import time as _time
     import urllib.request
 
-    from browser_use.browser.browser import Browser, BrowserConfig
+    from browser_use import Browser
 
     headless_raw = os.environ.get("ETHIO_HEADLESS", "true").lower()
     headless = headless_raw not in ("0", "false", "no", "off")
@@ -352,7 +360,7 @@ def _build_browser() -> Any:
         proc.terminate()
         raise RuntimeError("Chrome DevTools endpoint did not come up")
 
-    browser = Browser(config=BrowserConfig(cdp_url=cdp_url, headless=headless))
+    browser = Browser(cdp_url=cdp_url)
     # Stash for cleanup: kill Chrome and remove the profile dir when done.
     browser._ethio_chrome_proc = proc  # type: ignore[attr-defined]
     browser._ethio_user_data_dir = user_data_dir  # type: ignore[attr-defined]
@@ -402,9 +410,6 @@ def _build_agent(job: Job, on_step: Any) -> Any:
         browser=browser,
         register_new_step_callback=on_step,
         max_actions_per_step=5,
-        # Memory (mem0 embeddings) needs an OpenAI key we don't have; the
-        # agent works fine without long-term memory for single tasks.
-        enable_memory=False,
     )
     # stash for cleanup; not part of any public API
     agent._ethio_browser = browser

@@ -97,51 +97,33 @@ def fake_browser_use(monkeypatch):
         for name in (
             "browser_use",
             "browser_use.llm",
-            "browser_use.browser",
-            "browser_use.browser.browser",
-            "langchain_openai",
         )
         if name in sys.modules
     }
 
     mod = types.ModuleType("browser_use")
     llm_mod = types.ModuleType("browser_use.llm")
-    browser_pkg = types.ModuleType("browser_use.browser")
-    browser_mod = types.ModuleType("browser_use.browser.browser")
 
     class FakeChatOpenAI:
         def __init__(self, model=None, **kwargs):
             self.model = model
 
-    class FakeBrowserConfig:
-        def __init__(self, headless=True, **kwargs):
-            self.headless = headless
-
     class FakeBrowser:
-        def __init__(self, config=None):
-            self.config = config
+        def __init__(self, cdp_url=None, **kwargs):
+            self.cdp_url = cdp_url
             self.closed = False
 
         async def close(self):
             self.closed = True
 
-    # gateway.py imports ChatOpenAI from langchain_openai (browser-use
-    # 0.1.48 has no browser_use.llm module); fake that too.
-    lc_mod = types.ModuleType("langchain_openai")
-    lc_mod.ChatOpenAI = FakeChatOpenAI
-
+    # gateway.py imports ChatOpenAI from browser_use.llm (0.13.x);
+    # fake that module.
     llm_mod.ChatOpenAI = FakeChatOpenAI
-    browser_mod.Browser = FakeBrowser
-    browser_mod.BrowserConfig = FakeBrowserConfig
     mod.llm = llm_mod
-    mod.browser = browser_pkg
-    browser_pkg.browser = browser_mod
+    mod.Browser = FakeBrowser
 
     sys.modules["browser_use"] = mod
     sys.modules["browser_use.llm"] = llm_mod
-    sys.modules["browser_use.browser"] = browser_pkg
-    sys.modules["browser_use.browser.browser"] = browser_mod
-    sys.modules["langchain_openai"] = lc_mod
 
     # The point: browser_use.Agent is monkeypatched, never the real thing.
     monkeypatch.setattr(mod, "Agent", FakeAgent, raising=False)
@@ -152,9 +134,6 @@ def fake_browser_use(monkeypatch):
     for name in (
         "browser_use",
         "browser_use.llm",
-        "browser_use.browser",
-        "browser_use.browser.browser",
-        "langchain_openai",
     ):
         sys.modules.pop(name, None)
     sys.modules.update(saved)
@@ -419,7 +398,7 @@ def test_gemini_key_routes_to_google_openai_endpoint(
             created["api_key"] = api_key
 
     monkeypatch.setitem(
-        sys.modules, "langchain_openai",
+        sys.modules, "browser_use.llm",
         types.SimpleNamespace(ChatOpenAI=SpyChatOpenAI),
     )
     llm = gateway._build_llm()
@@ -445,7 +424,7 @@ def test_no_gemini_key_falls_back_to_openai(fake_browser_use, monkeypatch):
             created["base_url"] = base_url
 
     monkeypatch.setitem(
-        sys.modules, "langchain_openai",
+        sys.modules, "browser_use.llm",
         types.SimpleNamespace(ChatOpenAI=SpyChatOpenAI),
     )
     gateway._build_llm()
@@ -509,3 +488,45 @@ def test_global_concurrency_limit(client, api_key, fake_browser_use, monkeypatch
     )
     assert r.status_code == 429
     assert "max 2" in r.json()["detail"]
+
+
+def test_llm_uses_async_client_and_no_frequency_penalty(
+    fake_browser_use, monkeypatch
+):
+    """Regression test: browser-use 0.13.x requires httpx.AsyncClient, and
+    Gemini's OpenAI-compatible endpoint rejects frequency_penalty.
+
+    The original failure: Agent.run() failed at Step 1 with "Connection error"
+    because (1) httpx.Client was passed instead of httpx.AsyncClient, and
+    (2) frequency_penalty was sent by default which Gemini rejects with 400.
+    """
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    # Ensure the proxy is set so http_client gets created
+    monkeypatch.setenv("https_proxy", "http://test-proxy:8080")
+
+    created = {}
+
+    class SpyChatOpenAI:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules, "browser_use.llm",
+        types.SimpleNamespace(ChatOpenAI=SpyChatOpenAI),
+    )
+    gateway._build_llm()
+
+    # Must use AsyncClient (browser-use 0.13.x requirement)
+    http_client = created.get("http_client")
+    assert http_client is not None, "http_client must be provided"
+    import httpx
+    assert isinstance(http_client, httpx.AsyncClient), (
+        f"Expected httpx.AsyncClient, got {type(http_client).__name__}. "
+        "browser-use 0.13.x rejects httpx.Client."
+    )
+
+    # frequency_penalty must not be sent (Gemini rejects it with 400)
+    assert created.get("frequency_penalty") is None, (
+        "frequency_penalty must be None/omitted; "
+        "Gemini's OpenAI endpoint returns 400 for this field."
+    )
