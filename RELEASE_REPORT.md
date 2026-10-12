@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-12 (updated)
 **Repository:** https://github.com/mukti6635/ethio-passport-assistant
-**Local HEAD:** 8cf3466 (16 commits ahead of origin/main, unpushed per instructions)
+**Local HEAD:** 8a5c1a8 (18 commits ahead of origin/main, unpushed per instructions)
 
 ---
 
@@ -31,7 +31,7 @@
 - Localization: English 100%, Amharic 98.6%, Afaan Oromo "coming soon" (honest)
 - Legal: "Independent assistant. Not affiliated with any government agency."
 - Payment: "Fully simulated — no real charge"
-- **HttpWebUiTransport IMPLEMENTED:** real HTTP client using `package:http` (added to pubspec.yaml). Cannot verify compilation without Flutter SDK.
+- **HttpWebUiTransport IMPLEMENTED and VERIFIED:** `flutter analyze` clean, `flutter test` 59/59 pass (57 original + 2 new transport tests)
 
 ### Architecture & Docs
 - `docs/SCALE.md`: 3,000/day capacity design (unverified target)
@@ -48,10 +48,10 @@
 **Status:** Library-level issue in browser-use 0.1.48's CDP session management. Not fixable from the gateway.
 **Progress:** Fixed the Chrome launch (was the blocker); the remaining issue is session stability.
 
-### 🟡 P1: Flutter compilation — NOT VERIFIED
+### 🟡 P1: Flutter compilation — VERIFIED ✅
 **What:** `HttpWebUiTransport` implementation and new tests.
-**Status:** Code written following existing patterns, but no Flutter/Dart SDK to run `flutter analyze` or `flutter test`.
-**Risk:** Low-medium — the adapter logic was already tested; the transport is new but straightforward.
+**Status:** `flutter analyze` clean, `flutter test` 59/59 pass. Found Flutter SDK at `/home/hatch/sdks/flutter`.
+**Remaining:** None for the client itself. Release APK still needs building.
 
 ### 🟡 P1: Supabase — NOT CONNECTED
 **What:** Real database with migrations applied.
