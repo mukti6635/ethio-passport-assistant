@@ -234,18 +234,26 @@ def _build_llm() -> Any:
     # NOTE: browser-use 0.1.48 has no `browser_use.llm` module; the
     # project's own WebUI uses langchain_openai.ChatOpenAI instead.
     from langchain_openai import ChatOpenAI
+    import httpx
 
-    # httpx chokes on the IPv6 "[::1]" entries in this sandbox's no_proxy;
-    # the egress proxy (needed for the vault surrogate) still applies.
-    os.environ.pop("no_proxy", None)
-    os.environ.pop("NO_PROXY", None)
+    # The sandbox's egress proxy breaks Playwright's CDP WebSocket to
+    # localhost, so proxy env vars must go. But the vault surrogate needs the
+    # egress proxy for the LLM calls, so configure httpx with it explicitly.
+    proxy_url = (
+        os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY") or None
+    )
+    for key in ("https_proxy", "http_proxy", "HTTPS_PROXY", "HTTP_PROXY",
+                "ALL_PROXY", "all_proxy", "no_proxy", "NO_PROXY"):
+        os.environ.pop(key, None)
 
     gemini_key = _get_gemini_credential()
     if gemini_key:
+        http_client = httpx.Client(proxy=proxy_url, timeout=120.0) if proxy_url else None
         return ChatOpenAI(
             model=os.environ.get("ETHIO_LLM_MODEL", "gemini-3.8-flash"),
             base_url=os.environ.get("ETHIO_LLM_BASE_URL", GEMINI_OPENAI_BASE_URL),
             api_key=gemini_key,
+            http_client=http_client,
         )
     model = os.environ.get("ETHIO_LLM_MODEL", "gpt-4o")
     # OPENAI_API_KEY is read from the environment by the client itself.
