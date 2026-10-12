@@ -342,7 +342,6 @@ void main() {
       await sim.requestHuman(id, HumanCheckpoint.payment);
     });
   });
-}
 
   group('HttpWebUiTransport', () {
     test('401 raises WebUiAuthException', () async {
