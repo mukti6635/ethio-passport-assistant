@@ -37,6 +37,28 @@ from typing import Any, Dict, List, Optional
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
+
+def _sanitize_no_proxy() -> None:
+    """Remove bracketed IPv6 entries from no_proxy/NO_PROXY.
+
+    The sandbox sets no_proxy with entries like `[::1]` (bracketed). httpx
+    cannot parse these and raises `Invalid port: ':1]'`, which breaks
+    browser-use's internal httpx client (it creates its own AsyncClient
+    that reads the env vars). Unbracketed `::1` works fine.
+    """
+    for key in ("no_proxy", "NO_PROXY"):
+        val = os.environ.get(key)
+        if not val:
+            continue
+        parts = [p.strip() for p in val.split(",")]
+        # Drop bracketed forms; keep the unbracketed equivalents.
+        cleaned = [p for p in parts if not (p.startswith("[") and p.endswith("]"))]
+        if cleaned != parts:
+            os.environ[key] = ",".join(cleaned)
+
+
+_sanitize_no_proxy()
+
 logger = logging.getLogger("ethio.gateway")
 
 VERSION = "1.0.0"
@@ -270,11 +292,16 @@ def _build_llm() -> Any:
 def _build_browser() -> Any:
     """A fresh headless browser for one job.
 
-    Lets browser-use manage Chrome via Playwright's native launch (not CDP
-    to an external process). Points it at Playwright's bundled Chromium and
-    forces the DevTools endpoint onto IPv4 127.0.0.1 to dodge the sandbox's
-    localhost->::1 IPv6 mismatch.
+    Launches Chrome ourselves with IPv4-only remote debugging, then hands
+    browser-use the CDP URL. This avoids browser-use 0.1.48's hardcoded
+    `localhost` CDP connections (which resolve to ::1 in this sandbox while
+    Chrome listens on 127.0.0.1).
     """
+    import socket as _socket
+    import subprocess
+    import time as _time
+    import urllib.request
+
     from browser_use.browser.browser import Browser, BrowserConfig
 
     headless_raw = os.environ.get("ETHIO_HEADLESS", "true").lower()
@@ -282,13 +309,54 @@ def _build_browser() -> Any:
     chrome_path = os.environ.get("ETHIO_CHROME_PATH") or (
         os.path.expanduser("~/.cache/ms-playwright/chromium-1243/chrome-linux/chrome")
     )
-    kwargs: dict = {"headless": headless}
-    if os.path.exists(chrome_path):
-        kwargs["chrome_instance_path"] = chrome_path
-    # Note: do NOT force --remote-debugging-address; Chrome's default
-    # localhost binding is dual-stack and matches browser-use's localhost
-    # CDP connection. Forcing IPv4-only breaks the ::1 resolution.
-    return Browser(config=BrowserConfig(**kwargs))
+    if not os.path.exists(chrome_path):
+        raise RuntimeError(f"Chrome not found at {chrome_path}")
+
+    # Find a free port for this job's debugging endpoint.
+    with _socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        dbg_port = s.getsockname()[1]
+
+    user_data_dir = f"/tmp/ethio-chrome-{os.getpid()}-{dbg_port}"
+    os.makedirs(user_data_dir, exist_ok=True)
+    args = [
+        chrome_path,
+        "--headless=new" if headless else "--headless=false",
+        f"--remote-debugging-port={dbg_port}",
+        "--remote-debugging-address=127.0.0.1",
+        f"--user-data-dir={user_data_dir}",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "about:blank",
+    ]
+    proc = subprocess.Popen(
+        args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    # Wait for the DevTools endpoint to come up.
+    cdp_url = f"http://127.0.0.1:{dbg_port}"
+    deadline = _time.time() + 30
+    while _time.time() < deadline:
+        try:
+            with urllib.request.urlopen(
+                f"{cdp_url}/json/version", timeout=2
+            ) as resp:
+                if resp.status == 200:
+                    break
+        except Exception:
+            pass
+        if proc.poll() is not None:
+            raise RuntimeError("Chrome exited during startup")
+        _time.sleep(0.5)
+    else:
+        proc.terminate()
+        raise RuntimeError("Chrome DevTools endpoint did not come up")
+
+    browser = Browser(config=BrowserConfig(cdp_url=cdp_url, headless=headless))
+    # Stash for cleanup: kill Chrome and remove the profile dir when done.
+    browser._ethio_chrome_proc = proc  # type: ignore[attr-defined]
+    browser._ethio_user_data_dir = user_data_dir  # type: ignore[attr-defined]
+    return browser
 
 
 def _summarize_step(agent_output: Any, step_number: int) -> str:
@@ -359,6 +427,23 @@ async def _safe_close_browser(agent: Any) -> None:
         await browser.close()
     except Exception as exc:
         logger.warning("browser.close() raised: %s", type(exc).__name__)
+    # If we launched Chrome ourselves (cdp_url mode), kill the process and
+    # remove its profile dir so nothing leaks between jobs.
+    proc = getattr(browser, "_ethio_chrome_proc", None)
+    if proc is not None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=10)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    user_data_dir = getattr(browser, "_ethio_user_data_dir", None)
+    if user_data_dir:
+        import shutil
+
+        shutil.rmtree(user_data_dir, ignore_errors=True)
 
 
 async def _run_job(job: Job) -> None:
