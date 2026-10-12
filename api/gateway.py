@@ -67,6 +67,9 @@ TERMINAL_STATES = {
     JobState.TIMED_OUT,
 }
 
+#: States that hold a browser slot. Anything not terminal is active.
+_ACTIVE_STATES = {s for s in JobState} - TERMINAL_STATES
+
 
 @dataclass
 class Job:
@@ -466,6 +469,24 @@ async def start_task(
     _check_body_session(body.session_id, session_id)
     if not body.goal.strip():
         raise HTTPException(status_code=400, detail="goal must not be empty")
+    # Bounded concurrency: refuse new jobs when too many are active, and
+    # refuse a second concurrent job for the same session (one browser per
+    # applicant prevents state corruption).
+    max_jobs = int(os.environ.get("ETHIO_MAX_CONCURRENT_JOBS", "10"))
+    active = sum(
+        1 for j in _JOBS.values() if j.state in _ACTIVE_STATES
+    )
+    if active >= max_jobs:
+        raise HTTPException(
+            status_code=429,
+            detail=f"server busy: {active} jobs running (max {max_jobs})",
+        )
+    for j in _JOBS.values():
+        if j.session_id == session_id and j.state in _ACTIVE_STATES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"session already has active job {j.job_id}",
+            )
     job_id = uuid.uuid4().hex
     job = Job(
         job_id=job_id,

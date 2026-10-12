@@ -470,3 +470,42 @@ def test_metrics_endpoint_reports_counters(client, api_key, fake_browser_use):
     body = r.json()
     assert body["counters"]["jobs_created"] == 1
     assert body["jobs_by_state"].get("running", 0) >= 1
+
+
+def test_second_job_for_same_session_rejected(client, api_key, fake_browser_use, monkeypatch):
+    """One active browser per session: a second POST /tasks returns 409."""
+    monkeypatch.setattr(FakeAgent, "default_behavior", "hang")
+    h = _h()
+    job1 = _start(client, h)
+    _wait_state(client, job1, h, "running")
+    # Same session, second job -> 409 with the existing job id
+    r = client.post(
+        "/tasks",
+        headers=h,
+        json={"goal": "another", "session_id": "sess-A", "inputs": {}},
+    )
+    assert r.status_code == 409
+    assert job1 in r.json()["detail"]
+    # Different session is fine
+    h2 = _h(session="other-session")
+    job2 = _start(client, h2)
+    assert job2 != job1
+
+
+def test_global_concurrency_limit(client, api_key, fake_browser_use, monkeypatch):
+    """Beyond ETHIO_MAX_CONCURRENT_JOBS, new jobs get 429."""
+    monkeypatch.setattr(FakeAgent, "default_behavior", "hang")
+    monkeypatch.setenv("ETHIO_MAX_CONCURRENT_JOBS", "2")
+    ids = []
+    for i in range(2):
+        h = _h(session=f"sess-{i}")
+        jid = _start(client, h)
+        _wait_state(client, jid, h, "running")
+        ids.append(jid)
+    r = client.post(
+        "/tasks",
+        headers=_h(session="sess-overflow"),
+        json={"goal": "x", "session_id": "sess-overflow", "inputs": {}},
+    )
+    assert r.status_code == 429
+    assert "max 2" in r.json()["detail"]
