@@ -166,6 +166,8 @@ def fake_browser_use(monkeypatch):
 @pytest.fixture(autouse=True)
 def clean_jobs():
     gateway._JOBS.clear()
+    for key in gateway._METRICS:
+        gateway._METRICS[key] = 0
     yield
     gateway._JOBS.clear()
 
@@ -444,3 +446,22 @@ def test_no_gemini_key_falls_back_to_openai(fake_browser_use, monkeypatch):
     gateway._build_llm()
     assert created["model"] == "gpt-4o"
     assert created["base_url"] is None
+
+
+def test_metrics_endpoint_reports_counters(client, api_key, fake_browser_use):
+    """GET /metrics (auth required) exposes job counters and state breakdown."""
+    # No auth -> rejected
+    assert client.get("/metrics").status_code in (401, 403, 422)
+    h = _h()
+    r = client.get("/metrics", headers=h)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["version"] == gateway.VERSION
+    assert body["counters"]["jobs_created"] == 0
+
+    job_id = _start(client, h)
+    _wait_state(client, job_id, h, "running")
+    r = client.get("/metrics", headers=h)
+    body = r.json()
+    assert body["counters"]["jobs_created"] == 1
+    assert body["jobs_by_state"].get("running", 0) >= 1

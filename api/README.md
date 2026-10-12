@@ -45,6 +45,7 @@ All endpoints except `/health` require:
 | Method | Path                    | Body                                              | Returns |
 |--------|-------------------------|---------------------------------------------------|---------|
 | GET    | `/health`               | —                                                 | `{"ok": true, "version": "1.0.0"}` (no auth) |
+| GET    | `/metrics`              | —                                                 | `{"counters": {...}, "jobs_by_state": {...}}` (auth required; resets on restart) |
 | POST   | `/tasks`                | `{"goal": str, "inputs": {str: str}, "session_id": str}` | `{"job_id": str}` (HTTP 202) |
 | GET    | `/tasks/status/{id}`    | —                                                 | `{"state": str, "log": [str]}` |
 | POST   | `/tasks/pause/{id}`     | `{"checkpoint"?: str, "session_id": str}`          | `{"ok": true}` |

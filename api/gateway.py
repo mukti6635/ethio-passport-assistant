@@ -27,6 +27,7 @@ See README.md for the full environment-variable list.
 import asyncio
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -81,11 +82,39 @@ class Job:
     error: Optional[str] = None
     agent: Any = None  # browser-use Agent, created when the job starts
     task: Optional["asyncio.Task[None]"] = None  # background runner
+    created_at: float = field(default_factory=time.time)
+    started_at: Optional[float] = None  # set when the agent starts
+    ended_at: Optional[float] = None  # set on terminal state
 
 
 # In-memory job registry. Fine for a single gateway process; a multi-worker
 # deployment would need a shared store (Redis/Postgres) instead.
 _JOBS: Dict[str, Job] = {}
+
+# Operational counters. Reset on restart; a production deployment should
+# export these to a real metrics backend.
+_METRICS: Dict[str, int] = {
+    "jobs_created": 0,
+    "jobs_succeeded": 0,
+    "jobs_failed": 0,
+    "jobs_cancelled": 0,
+    "jobs_timed_out": 0,
+    "checkpoints_requested": 0,
+}
+
+
+def _record_terminal(job: Job) -> None:
+    """Record a job reaching a terminal state: metrics + end timestamp."""
+    if job.ended_at is None:
+        job.ended_at = time.time()
+        _METRICS[f"jobs_{job.state.value}"] = (
+            _METRICS.get(f"jobs_{job.state.value}", 0) + 1
+        )
+        duration = job.ended_at - (job.started_at or job.created_at)
+        logger.info(
+            "job %s ended: state=%s duration_s=%.1f steps=%d",
+            job.job_id, job.state.value, duration, len(job.log),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -285,10 +314,12 @@ async def _run_job(job: Job) -> None:
         job.error = f"{type(exc).__name__}: {str(exc)[:200]}"
         job.log.append(f"failed to start: {job.error}")
         logger.exception("job %s failed to start", job.job_id)
+        _record_terminal(job)
         return
 
     agent = job.agent
     job.state = JobState.RUNNING
+    job.started_at = time.time()
     job.log.append("agent started")
     logger.info("job %s running (timeout %ss)", job.job_id, timeout_s)
 
@@ -301,6 +332,7 @@ async def _run_job(job: Job) -> None:
         if job.state == JobState.RUNNING:
             job.state = JobState.SUCCEEDED
             job.log.append("agent finished successfully")
+            _record_terminal(job)
         try:
             job.final_result = history.final_result()
         except Exception:
@@ -311,6 +343,7 @@ async def _run_job(job: Job) -> None:
         job.log.append(job.error)
         logger.warning("job %s timed out", job.job_id)
         _safe_stop(agent)
+        _record_terminal(job)
     except asyncio.CancelledError:
         # Cancelled via POST /tasks/cancel/{id}: the endpoint already set the
         # terminal state, so just make sure the agent is stopped.
@@ -321,6 +354,7 @@ async def _run_job(job: Job) -> None:
         job.error = f"{type(exc).__name__}: {str(exc)[:200]}"
         job.log.append(f"failed: {job.error}")
         logger.exception("job %s failed", job.job_id)
+        _record_terminal(job)
     finally:
         await _safe_close_browser(agent)
 
@@ -336,6 +370,21 @@ app = FastAPI(title="ETHIO browser-use gateway", version=VERSION)
 async def health() -> Dict[str, Any]:
     """No auth. For load balancers and the Flutter client's ping."""
     return {"ok": True, "version": VERSION}
+
+
+@app.get("/metrics")
+async def metrics(session_id: str = Depends(require_auth)) -> Dict[str, Any]:
+    """Operational counters (auth required). Resets on restart; export to a
+    real metrics backend for production."""
+    by_state: Dict[str, int] = {}
+    for job in _JOBS.values():
+        by_state[job.state.value] = by_state.get(job.state.value, 0) + 1
+    return {
+        "version": VERSION,
+        "counters": dict(_METRICS),
+        "jobs_by_state": by_state,
+        "jobs_tracked": len(_JOBS),
+    }
 
 
 @app.post("/tasks", status_code=202)
@@ -355,6 +404,7 @@ async def start_task(
     )
     _JOBS[job_id] = job
     job.task = asyncio.create_task(_run_job(job))
+    _METRICS["jobs_created"] += 1
     logger.info("job %s created for session %s", job_id, session_id[:8] + "...")
     return {"job_id": job_id}
 
@@ -388,6 +438,7 @@ async def pause_job(
         job.state = JobState.AWAITING_HUMAN
         job.checkpoint = body.checkpoint
         job.log.append(f"paused for human checkpoint: {body.checkpoint}")
+        _METRICS["checkpoints_requested"] += 1
     else:
         job.state = JobState.PAUSED
         job.log.append("paused by operator")
@@ -426,6 +477,7 @@ async def cancel_job(
         return {"ok": True}
     job.state = JobState.CANCELLED
     job.log.append("cancelled by operator")
+    _record_terminal(job)
     if job.agent is not None:
         _safe_stop(job.agent)
     if job.task is not None and not job.task.done():
