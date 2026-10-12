@@ -267,15 +267,11 @@ def _build_llm() -> Any:
 def _build_browser() -> Any:
     """A fresh headless browser for one job.
 
-    Launches Chrome ourselves with IPv4-only remote debugging, then hands
-    browser-use the CDP URL. This avoids two sandbox pitfalls: browser-use's
-    default channel='chromium' (no system Chrome) and its localhost CDP
-    connection resolving to IPv6 ::1 while Chrome listens on IPv4.
+    Lets browser-use manage Chrome via Playwright's native launch (not CDP
+    to an external process). Points it at Playwright's bundled Chromium and
+    forces the DevTools endpoint onto IPv4 127.0.0.1 to dodge the sandbox's
+    localhost->::1 IPv6 mismatch.
     """
-    import subprocess
-    import time as _time
-    import urllib.request
-
     from browser_use.browser.browser import Browser, BrowserConfig
 
     headless_raw = os.environ.get("ETHIO_HEADLESS", "true").lower()
@@ -283,56 +279,12 @@ def _build_browser() -> Any:
     chrome_path = os.environ.get("ETHIO_CHROME_PATH") or (
         os.path.expanduser("~/.cache/ms-playwright/chromium-1243/chrome-linux/chrome")
     )
-    if not os.path.exists(chrome_path):
-        raise RuntimeError(f"Chrome not found at {chrome_path}")
-
-    import socket as _socket
-
-    # Find a free port for this job's debugging endpoint.
-    with _socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        dbg_port = s.getsockname()[1]
-
-    user_data_dir = f"/tmp/ethio-chrome-{os.getpid()}-{dbg_port}"
-    os.makedirs(user_data_dir, exist_ok=True)
-    args = [
-        chrome_path,
-        "--headless=new" if headless else "--headless=false",
-        f"--remote-debugging-port={dbg_port}",
-        "--remote-debugging-address=127.0.0.1",
-        f"--user-data-dir={user_data_dir}",
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "about:blank",
-    ]
-    proc = subprocess.Popen(
-        args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-    # Wait for the DevTools endpoint to come up.
-    cdp_url = f"http://127.0.0.1:{dbg_port}"
-    deadline = _time.time() + 30
-    while _time.time() < deadline:
-        try:
-            with urllib.request.urlopen(
-                f"{cdp_url}/json/version", timeout=2
-            ) as resp:
-                if resp.status == 200:
-                    break
-        except Exception:
-            pass
-        if proc.poll() is not None:
-            raise RuntimeError("Chrome exited during startup")
-        _time.sleep(0.5)
-    else:
-        proc.terminate()
-        raise RuntimeError("Chrome DevTools endpoint did not come up")
-
-    browser = Browser(config=BrowserConfig(cdp_url=cdp_url, headless=headless))
-    # Stash for cleanup: kill Chrome and remove the profile dir when done.
-    browser._ethio_chrome_proc = proc  # type: ignore[attr-defined]
-    browser._ethio_user_data_dir = user_data_dir  # type: ignore[attr-defined]
-    return browser
+    kwargs: dict = {"headless": headless}
+    if os.path.exists(chrome_path):
+        kwargs["chrome_instance_path"] = chrome_path
+    # Force DevTools onto IPv4; the sandbox resolves localhost to ::1 first.
+    kwargs["extra_browser_args"] = ["--remote-debugging-address=127.0.0.1"]
+    return Browser(config=BrowserConfig(**kwargs))
 
 
 def _summarize_step(agent_output: Any, step_number: int) -> str:
@@ -403,23 +355,6 @@ async def _safe_close_browser(agent: Any) -> None:
         await browser.close()
     except Exception as exc:
         logger.warning("browser.close() raised: %s", type(exc).__name__)
-    # If we launched Chrome ourselves (cdp_url mode), kill the process and
-    # remove its profile dir so nothing leaks between jobs.
-    proc = getattr(browser, "_ethio_chrome_proc", None)
-    if proc is not None:
-        try:
-            proc.terminate()
-            proc.wait(timeout=10)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-    user_data_dir = getattr(browser, "_ethio_user_data_dir", None)
-    if user_data_dir:
-        import shutil
-
-        shutil.rmtree(user_data_dir, ignore_errors=True)
 
 
 async def _run_job(job: Job) -> None:
