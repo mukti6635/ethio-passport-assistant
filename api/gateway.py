@@ -163,12 +163,31 @@ def _get_job(job_id: str, session_id: str) -> Job:
 # ---------------------------------------------------------------------------
 
 
+#: Google's OpenAI-compatible Gemini endpoint (no extra dependency needed).
+GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+
 def _build_llm() -> Any:
-    """Chat model for the agent. Provider choice is env-only."""
+    """Chat model for the agent. Provider choice is env-only.
+
+    - ``GEMINI_API_KEY`` set -> Gemini via Google's OpenAI-compatible
+      endpoint, model from ``ETHIO_LLM_MODEL`` (default ``gemini-3.8-flash``).
+    - Otherwise -> OpenAI, model from ``ETHIO_LLM_MODEL`` (default
+      ``gpt-4o``), key from ``OPENAI_API_KEY``.
+
+    The key is never logged, never sent to clients, and never hard-coded.
+    """
     # NOTE: browser-use 0.1.48 has no `browser_use.llm` module; the
     # project's own WebUI uses langchain_openai.ChatOpenAI instead.
     from langchain_openai import ChatOpenAI
 
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if gemini_key:
+        return ChatOpenAI(
+            model=os.environ.get("ETHIO_LLM_MODEL", "gemini-3.8-flash"),
+            base_url=GEMINI_OPENAI_BASE_URL,
+            api_key=gemini_key,
+        )
     model = os.environ.get("ETHIO_LLM_MODEL", "gpt-4o")
     # OPENAI_API_KEY is read from the environment by the client itself.
     return ChatOpenAI(model=model)

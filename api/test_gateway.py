@@ -294,10 +294,12 @@ def test_session_isolation(client, api_key, fake_browser_use):
 def test_full_lifecycle_pause_resume_cancel(client, api_key, fake_browser_use):
     h = _h()
     job_id = _start(client, h, goal="fill the mock form")
+    # Wait for running BEFORE touching instances: the gateway sets RUNNING
+    # only after the agent is created, so this removes the race where the
+    # background task hasn't run yet when POST /tasks returns 202.
+    _wait_state(client, job_id, h, "running")
     agent = FakeAgent.instances[-1]
     assert agent.kwargs["task"].startswith("fill the mock form")
-
-    _wait_state(client, job_id, h, "running")
     # Step callback fed the log without crashing.
     status = client.get(f"/tasks/status/{job_id}", headers=h).json()
     assert any("click_element" in line for line in status["log"])
@@ -339,8 +341,9 @@ def test_full_lifecycle_pause_resume_cancel(client, api_key, fake_browser_use):
 def test_cancel_is_idempotent(client, api_key, fake_browser_use):
     h = _h()
     job_id = _start(client, h)
-    agent = FakeAgent.instances[-1]
+    # Same race fix: RUNNING implies the agent instance exists.
     _wait_state(client, job_id, h, "running")
+    agent = FakeAgent.instances[-1]
 
     assert client.post(f"/tasks/cancel/{job_id}", json={"session_id": "sess-A"}, headers=h).json() == {"ok": True}
     assert agent.stop_calls >= 1
@@ -391,3 +394,53 @@ def test_job_timeout(client, api_key, fake_browser_use, monkeypatch):
 def test_start_rejects_empty_goal(client, api_key, fake_browser_use):
     r = client.post("/tasks", json={"goal": "   ", "inputs": {}}, headers=_h())
     assert r.status_code == 400
+
+
+def test_gemini_key_routes_to_google_openai_endpoint(
+    fake_browser_use, monkeypatch
+):
+    """GEMINI_API_KEY set -> ChatOpenAI pointed at Google's OpenAI-compatible
+    endpoint, never at api.openai.com. The key itself is passed through, not
+    logged or embedded anywhere."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    created = {}
+
+    class SpyChatOpenAI:
+        def __init__(self, model=None, base_url=None, api_key=None, **kwargs):
+            created["model"] = model
+            created["base_url"] = base_url
+            created["api_key"] = api_key
+
+    monkeypatch.setitem(
+        sys.modules, "langchain_openai",
+        types.SimpleNamespace(ChatOpenAI=SpyChatOpenAI),
+    )
+    llm = gateway._build_llm()
+    assert isinstance(llm, SpyChatOpenAI)
+    assert created["base_url"] == gateway.GEMINI_OPENAI_BASE_URL
+    assert "generativelanguage.googleapis.com" in created["base_url"]
+    assert "api.openai.com" not in created["base_url"]
+    assert created["model"] == "gemini-3.8-flash"
+    assert created["api_key"] == "test-gemini-key"
+
+
+def test_no_gemini_key_falls_back_to_openai(fake_browser_use, monkeypatch):
+    """Without GEMINI_API_KEY the gateway keeps the previous OpenAI behavior."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    created = {}
+
+    class SpyChatOpenAI:
+        def __init__(self, model=None, base_url=None, api_key=None, **kwargs):
+            created["model"] = model
+            created["base_url"] = base_url
+
+    monkeypatch.setitem(
+        sys.modules, "langchain_openai",
+        types.SimpleNamespace(ChatOpenAI=SpyChatOpenAI),
+    )
+    gateway._build_llm()
+    assert created["model"] == "gpt-4o"
+    assert created["base_url"] is None

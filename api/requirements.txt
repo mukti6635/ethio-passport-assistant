@@ -4,5 +4,6 @@
 fastapi
 uvicorn[standard]
 pydantic
+langchain-openai  # direct import in gateway.py (also required by browser-use)
 httpx  # only needed to run the contract tests (test_gateway.py)
 pytest  # only needed to run the contract tests

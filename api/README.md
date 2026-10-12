@@ -13,7 +13,8 @@ pip install -r requirements.txt        # browser-use and friends
 pip install -r api/requirements.txt    # fastapi, uvicorn, ...
 
 export GATEWAY_API_KEY="pick-a-long-random-secret"
-export OPENAI_API_KEY="your-openai-key"   # the agent's LLM key, server-side
+export GEMINI_API_KEY="your-gemini-key"   # the agent's LLM key, server-side
+# ...or: export OPENAI_API_KEY="your-openai-key"  (used only if GEMINI_API_KEY is unset)
 
 uvicorn api.gateway:app --host 0.0.0.0 --port 8000
 ```
@@ -23,8 +24,9 @@ uvicorn api.gateway:app --host 0.0.0.0 --port 8000
 | Variable              | Default   | Purpose                                            |
 |-----------------------|-----------|----------------------------------------------------|
 | `GATEWAY_API_KEY`     | *(none)*  | **Required.** Bearer token the Flutter app sends. If unset the gateway fails closed (HTTP 500 on every authenticated endpoint) — it never runs without auth. |
-| `OPENAI_API_KEY`      | *(none)*  | LLM key for the agent. Never sent to clients.      |
-| `ETHIO_LLM_MODEL`     | `gpt-4o`  | Model passed to `browser_use.llm.ChatOpenAI`.      |
+| `GEMINI_API_KEY`      | *(none)*  | **Preferred for testing.** When set, the agent uses Gemini via Google's OpenAI-compatible endpoint (`https://generativelanguage.googleapis.com/v1beta/openai/`). Never sent to clients, never logged. |
+| `OPENAI_API_KEY`      | *(none)*  | LLM key for the agent when `GEMINI_API_KEY` is unset. Never sent to clients. |
+| `ETHIO_LLM_MODEL`     | `gemini-3.8-flash` / `gpt-4o` | Model name. Defaults to `gemini-3.8-flash` when `GEMINI_API_KEY` is set, `gpt-4o` otherwise. |
 | `ETHIO_HEADLESS`      | `true`    | Run the browser headless (`false` to watch it).    |
 | `ETHIO_MAX_STEPS`     | `50`      | Max agent steps per task.                          |
 | `ETHIO_JOB_TIMEOUT_S` | `1200`    | Job timeout in seconds; timed-out jobs are stopped and marked `timed_out`. |
