@@ -1,17 +1,15 @@
 import 'dart:async';
+import 'dart:convert';
 
-/// Future integration point for the user's Browser Use WebUI backend.
+import 'package:http/http.dart' as http;
+
+/// Integration point for the ETHIO browser-use gateway backend.
 ///
-/// This file is intentionally a stub: the prototype performs NO real browser
-/// automation and makes NO network calls. When the backend is ready:
-///
-/// 1. Implement [BrowserUseClient] with HTTP calls to the WebUI backend
-///    (see [HttpBrowserUseClient] below for the exact surface to fill in).
-/// 2. Swap [BrowserUseClient.instance] to the real implementation.
-/// 3. The AI activity screen will stream real [AutomationEvent]s instead of
-///    the simulated timeline.
-///
-/// Nothing in the UI needs to change — it already consumes this interface.
+/// [BrowserUseClient] is the interface the UI consumes. Two implementations:
+/// * [SimulatedBrowserUseClient] — fake timeline for development.
+/// * [WebUiHttpAdapter] — real HTTP client for the FastAPI gateway in `/api`.
+///   Wire it with [HttpWebUiTransport] and set `BrowserUseClient.instance`.
+///   See `mobile/lib/integrations/HTTP_CLIENT_SPEC.md` for the wiring guide.
 abstract class BrowserUseClient {
   /// Shared instance. Defaults to the simulator; replace with the real
   /// client when the backend is connected.
@@ -165,6 +163,66 @@ class _MissingTransport implements WebUiTransport {
 
   @override
   void close() => _fail();
+}
+
+/// Real HTTP transport for the ETHIO gateway.
+///
+/// Uses `package:http` to make actual network calls. Construct with the
+/// gateway's base URL (e.g. 'http://127.0.0.1:8000'), then pass to
+/// [WebUiHttpAdapter].
+///
+/// Timeouts are enforced by the adapter; this transport sets a generous
+/// per-request ceiling as a backstop.
+class HttpWebUiTransport implements WebUiTransport {
+  HttpWebUiTransport({required this.baseUrl, http.Client? client})
+      : _client = client ?? http.Client();
+
+  final String baseUrl;
+  final http.Client _client;
+  static const _backstopTimeout = Duration(seconds: 60);
+
+  Uri _uri(String path) {
+    final base = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
+    final p = path.startsWith('/') ? path : '/$path';
+    return Uri.parse('$base$p');
+  }
+
+  Map<String, dynamic> _decode(http.Response res, String method, String path) {
+    if (res.statusCode == 401 || res.statusCode == 403) {
+      throw WebUiAuthException(
+          '$method $path rejected: HTTP ${res.statusCode} (check API key)');
+    }
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw WebUiException(
+          '$method $path failed: HTTP ${res.statusCode}: ${res.body}');
+    }
+    if (res.body.isEmpty) return <String, dynamic>{};
+    final decoded = jsonDecode(res.body);
+    if (decoded is Map<String, dynamic>) return decoded;
+    // Some endpoints return a bare list or scalar; wrap it.
+    return <String, dynamic>{'data': decoded};
+  }
+
+  @override
+  Future<Map<String, dynamic>> get(String path,
+      {Map<String, String>? headers}) async {
+    final res = await _client
+        .get(_uri(path), headers: headers)
+        .timeout(_backstopTimeout);
+    return _decode(res, 'GET', path);
+  }
+
+  @override
+  Future<Map<String, dynamic>> post(String path, Map<String, dynamic> body,
+      {Map<String, String>? headers}) async {
+    final res = await _client
+        .post(_uri(path), headers: headers, body: jsonEncode(body))
+        .timeout(_backstopTimeout);
+    return _decode(res, 'POST', path);
+  }
+
+  @override
+  void close() => _client.close();
 }
 
 /// Base error for WebUI adapter failures.
