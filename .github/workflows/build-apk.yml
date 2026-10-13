@@ -13,6 +13,9 @@ name: Build ETHIO debug APK
 
 on:
   workflow_dispatch:
+  push:
+    branches: [work/ethio-market-readiness]
+
 
 jobs:
   build-apk:
