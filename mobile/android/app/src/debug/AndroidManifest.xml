@@ -4,4 +4,10 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Development only: the pilot gateway runs on a dev machine and is
+         reached from a device over the LAN by IP address (plain HTTP).
+         Android 9+ blocks cleartext by default, so debug builds opt in
+         here. The MAIN manifest deliberately does not: release builds
+         stay HTTPS-only (Supabase + a TLS-terminated gateway). -->
+    <application android:usesCleartextTraffic="true" />
 </manifest>

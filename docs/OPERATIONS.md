@@ -45,7 +45,7 @@ pays Google for tokens.
 
 ```bash
 # Development (auto-reload off for agent stability)
-uvicorn api.gateway:app --host 127.0.0.1 --port 8000 --workers 1
+uvicorn gateway:app --host 127.0.0.1 --port 8000 --workers 1  # run from api/
 # NOTE: --workers 1. The job store is in-memory; multiple workers would
 # each have their own empty store. See docs/SCALE.md for the multi-worker plan.
 

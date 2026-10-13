@@ -70,12 +70,22 @@
 ### 🟡 P1: Flutter compilation — VERIFIED ✅
 **What:** `HttpWebUiTransport` implementation and new tests.
 **Status:** `flutter analyze` clean, `flutter test` 59/59 pass. Found Flutter SDK at `/home/hatch/sdks/flutter`.
-**Remaining:** None for the client itself. Release APK still needs building.
+**Remaining:** None for the client itself.
 
-### 🟡 P1: Supabase — NOT CONNECTED
+### 🟢 P1: Android APK — BUILT SUCCESSFULLY (2026-10-12)
+**What:** Release APK via GitHub Actions CI.
+**Status:** ✅ Build succeeded on GitHub Actions (run #38286248394, 5m 32s).
+- Artifact: `ethio-debug-apk` (73.5 MB)
+- Download: https://github.com/mukti6635/ethio-passport-assistant/actions/runs/38286248394/artifacts/11763596810
+- All Flutter tests passed, analyzer clean in CI environment.
+
+### 🟢 P1: Supabase — CONNECTED & VERIFIED (2026-10-12)
 **What:** Real database with migrations applied.
-**Status:** Migrations 001-003 ready and syntax-checked. Setup guide written.
-**Action needed:** User creates project at supabase.com/dashboard (5 min), runs 3 migrations, provides URL + keys.
+**Status:** ✅ All 3 migrations applied to "ethio" project via dashboard.
+- 11 tables created and verified in Table Editor (profiles, tasks, requirements, documents, extractions, confirmed_fields, issues, checkpoints, browser_sessions, audit_events, agent_jobs)
+- 16/16 RLS policies verified live via Database → Policies UI (13 on public tables, 3 on storage.objects)
+- API connection verified: `GET /rest/v1/profiles` returns HTTP 200 with anon key
+- Project URL: `https://zvkkhojqwnsuggeslhga.supabase.co` (corrected from user-provided wrong URL)
 
 ### 🟡 P2: Load testing — NOT MEASURED
 **What:** API throughput for 3,000/day target.

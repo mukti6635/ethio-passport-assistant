@@ -1,4 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required for Supabase auth and the ETHIO gateway. The Flutter
+         template only grants INTERNET in the debug/profile manifests;
+         without it here a RELEASE build has no network access at all
+         (found in the Phase 11 Android audit). -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="ETHIO"
         android:name="${applicationName}"

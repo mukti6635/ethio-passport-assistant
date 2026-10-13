@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'app.dart';
+import 'backend/app_services.dart';
 import 'screens/ai_activity_screen.dart';
 import 'screens/approval_hub_screen.dart';
 import 'screens/appointments_screen.dart';
@@ -38,7 +39,11 @@ class EthioRoutes {
       case '/ai':
         return _page(AiActivityScreen(taskId: a as String));
       case '/approvals':
-        return _page(ApprovalHubScreen(taskId: a as String));
+        return _page(ApprovalHubScreen(
+          taskId: a as String,
+          gatewaySession: AppServices.instance.gatewaySession,
+          auth: AppServices.instance.auth,
+        ));
       case '/otp':
         return _page(OtpScreen(taskId: a as String));
       case '/captcha':
@@ -57,3 +62,11 @@ class EthioRoutes {
   static MaterialPageRoute<void> _page(Widget child) =>
       MaterialPageRoute<void>(builder: (_) => child);
 }
+
+// Gateway + auth wiring lives in backend/app_services.dart and
+// backend/gateway_client.dart (Phase 7): the approval hub resolves a
+// fresh credential from the signed-in user's Supabase session on every
+// call in jwt mode, or uses the development gateway key in devkey mode.
+// Configuration comes from --dart-define values only (see
+// docs/DEVELOPMENT.md §6); nothing is hard-coded, and a Supabase
+// service-role key must NEVER be put in the app.

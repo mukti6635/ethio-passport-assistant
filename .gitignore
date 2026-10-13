@@ -212,3 +212,9 @@ key.properties
 # Gateway runtime
 api/__pycache__/
 api/.venv/
+
+# ETHIO: real env files never enter version control (templates do)
+*.env
+!/.env.example
+!/mobile/.env.example
+ethio-pilot.env
